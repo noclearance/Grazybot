@@ -5,6 +5,8 @@ from discord.ext import tasks
 import os
 from dotenv import load_dotenv
 import aiohttp
+from aiohttp import web
+import asyncio
 from datetime import datetime, timedelta, timezone
 import random
 import sqlite3
@@ -277,18 +279,40 @@ async def event_manager():
     
     recap_channel = bot.get_channel(RECAP_CHANNEL_ID)
     if recap_channel and now.weekday() == 6 and now.hour == 19 and now.minute < 5:
-        # ... (Weekly recap logic)
-        pass
+        url = f"https://api.wiseoldman.net/v2/groups/{WOM_CLAN_ID}/gained?period=week&metric=overall"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    recap_text = await generate_recap_text(data)
+                    embed = discord.Embed(title="📈 Weekly Recap from the Taskmaster", description=recap_text, color=discord.Color.from_rgb(100, 150, 255))
+                    embed.set_footer(text=f"Recap for the week ending {now.strftime('%B %d, %Y')}")
+                    await recap_channel.send(embed=embed)
 
     sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
     if sotw_channel:
-        # ... (Competition reminder logic)
-        pass
+        conn = sqlite3.connect(DB_FILE); cursor = conn.cursor(); cursor.row_factory = sqlite3.Row
+        competitions = cursor.execute("SELECT * FROM active_competitions").fetchall()
+        for comp in competitions:
+            ends_at = datetime.fromisoformat(comp['ends_at'].replace('Z', '+00:00')); starts_at = datetime.fromisoformat(comp['starts_at'].replace('Z', '+00:00'))
+            if now > ends_at: cursor.execute("DELETE FROM active_competitions WHERE id = ?", (comp['id'],)); continue
+            if not comp['final_ping_sent'] and (ends_at - now) <= timedelta(hours=1):
+                reminder_embed = discord.Embed(title="⏳ Final Hour!", description=f"The **{comp['title']}** competition ends in less than an hour!", color=discord.Color.red(), url=f"https://wiseoldman.net/competitions/{comp['id']}")
+                await sotw_channel.send(content="@everyone", embed=reminder_embed); cursor.execute("UPDATE active_competitions SET final_ping_sent = 1 WHERE id = ?", (comp['id'],))
+            elif not comp['midway_ping_sent'] and now >= starts_at + ((ends_at - starts_at) / 2):
+                midway_embed = discord.Embed(title="½ Midway Point Reached!", description=f"The **{comp['title']}** competition is halfway through!", color=discord.Color.yellow(), url=f"https://wiseoldman.net/competitions/{comp['id']}")
+                await sotw_channel.send(embed=midway_embed); cursor.execute("UPDATE active_competitions SET midway_ping_sent = 1 WHERE id = ?", (comp['id'],))
+        conn.commit(); conn.close()
     
     raffle_channel = bot.get_channel(RAFFLE_CHANNEL_ID)
     if raffle_channel:
-        # ... (Raffle drawing logic)
-        pass
+        conn = sqlite3.connect(DB_FILE); cursor = conn.cursor(); cursor.row_factory = sqlite3.Row
+        raffle_data = cursor.execute("SELECT * FROM raffles WHERE winner_id IS NULL LIMIT 1").fetchone()
+        if raffle_data:
+            ends_at = datetime.fromisoformat(raffle_data['ends_at'])
+            if now > ends_at:
+                await draw_raffle_winner(raffle_channel)
+        conn.commit(); conn.close()
 
 # --- BOT EVENTS ---
 @bot.event
@@ -296,7 +320,7 @@ async def on_ready():
     print(f"{bot.user} is online and ready!")
     setup_database()
     event_manager.start()
-    bot.add_view(SubmissionView()) # Register the persistent view
+    bot.add_view(SubmissionView())
 
 # --- BOT COMMANDS ---
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
@@ -376,18 +400,13 @@ async def enter_raffle(ctx: discord.ApplicationContext):
     raffle_data = cursor.execute("SELECT prize FROM raffles LIMIT 1").fetchone()
     if not raffle_data:
         conn.close(); return await ctx.respond("There is no active raffle to enter right now.", ephemeral=True)
-
     self_entries = cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = ? AND source = 'self'", (ctx.author.id,)).fetchone()[0]
-    
     if self_entries >= 10:
         conn.close(); return await ctx.respond("You have already claimed your maximum of 10 tickets for this raffle!", ephemeral=True)
-
     cursor.execute("INSERT INTO raffle_entries (user_id, source) VALUES (?, 'self')", (ctx.author.id,))
     conn.commit()
-    
     total_tickets = cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = ?", (ctx.author.id,)).fetchone()[0]
     conn.close()
-
     await ctx.respond(f"You have successfully claimed a ticket for the **{raffle_data[0]}** raffle! You now have a total of {total_tickets} ticket(s).", ephemeral=True)
 
 @raffle.command(name="give_tickets", description="ADMIN: Give raffle tickets to a member.")
@@ -634,8 +653,13 @@ async def link(ctx: discord.ApplicationContext, username: discord.Option(str, "Y
     conn.commit(); conn.close()
     await ctx.respond(f"Success! Your Discord account has been linked to the OSRS name: **{username}**.", ephemeral=True)
 
-# --- RUN THE BOT ---
-bot.run(TOKEN)
+# --- Main Execution Block ---
+async def main():
+    await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
 
 
 
