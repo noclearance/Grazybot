@@ -672,9 +672,25 @@ async def link(ctx: discord.ApplicationContext, username: discord.Option(str, "Y
     await ctx.respond(f"Success! Your Discord account has been linked to the OSRS name: **{username}**.", ephemeral=True)
 
 # --- Main Execution Block ---
+async def run_bot():
+    """A resilient function to start the bot and handle rate limits."""
+    while True:
+        try:
+            await bot.start(TOKEN)
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                print("BOT is being rate-limited by Discord. Retrying in 5 minutes...")
+                await asyncio.sleep(300) # Wait 5 minutes before trying to reconnect
+            else:
+                print(f"An unexpected HTTP error occurred with the bot: {e}")
+                break # Exit on other HTTP errors
+        except Exception as e:
+            print(f"An unexpected error occurred while running the bot: {e}")
+            break # Exit on other errors
+
 async def main():
     web_task = asyncio.create_task(start_web_server())
-    bot_task = asyncio.create_task(bot.start(TOKEN))
+    bot_task = asyncio.create_task(run_bot())
     await asyncio.gather(web_task, bot_task)
 
 if __name__ == "__main__":
