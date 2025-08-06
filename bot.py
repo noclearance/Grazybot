@@ -107,11 +107,7 @@ class FinishButton(discord.ui.Button):
         if sotw_channel:
             embed = await create_competition_embed(data, interaction.user, poll_winner=True)
             sotw_message = await sotw_channel.send(embed=embed)
-            await send_global_announcement(
-                title="⚔️ A New Skill of the Week has Begun! ⚔️",
-                description=f"The clan has voted! The new SOTW is **{winner.capitalize()}**.",
-                message_url=sotw_message.jump_url
-            )
+            await send_global_announcement("sotw_start", {"skill": winner.capitalize()}, sotw_message.jump_url)
             await interaction.followup.send("Competition created in the SOTW channel!", ephemeral=True)
         
         for item in view.children: item.disabled = True
@@ -252,7 +248,7 @@ async def generate_announcement_text(event_type: str, details: dict = None):
         return response.text
     except Exception as e:
         print(f"An error occurred during announcement generation: {e}")
-        return specific_prompt # Fallback to the basic text if AI fails
+        return specific_prompt
 
 async def draw_raffle_winner(channel: discord.TextChannel):
     conn = sqlite3.connect(DB_FILE)
@@ -358,13 +354,21 @@ async def update_bingo_board_post():
     except Exception as e:
         print(f"Error updating bingo board: {e}")
 
-async def send_global_announcement(title: str, description: str, message_url: str):
+async def send_global_announcement(event_type: str, details: dict, message_url: str):
     announcement_channel = bot.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
     if not announcement_channel:
         print("Error: Global announcements channel not found.")
         return
         
-    embed = discord.Embed(title=title, description=description, color=discord.Color.blue(), url=message_url)
+    title_map = {
+        "sotw_start": "⚔️ A New Skill of the Week has Begun! ⚔️",
+        "raffle_start": "🎟️ A New Raffle has Started! 🎟️",
+        "bingo_start": "🧩 A New Clan Bingo Has Started! 🧩"
+    }
+    
+    description = await generate_announcement_text(event_type, details)
+    
+    embed = discord.Embed(title=title_map.get(event_type, "🎉 New Event!"), description=description, color=discord.Color.blue(), url=message_url)
     embed.add_field(name="Details", value=f"[Click here to view the event!]({message_url})")
     embed.set_footer(text="A new clan event has started!")
     
@@ -469,11 +473,7 @@ async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_da
     if sotw_channel:
         embed = await create_competition_embed(data, ctx.author)
         sotw_message = await sotw_channel.send(embed=embed)
-        await send_global_announcement(
-            title="⚔️ A New Skill of the Week has Begun! ⚔️",
-            description=f"A new SOTW has been manually started for **{skill.capitalize()}**.",
-            message_url=sotw_message.jump_url
-        )
+        await send_global_announcement("sotw_start", {"skill": skill.capitalize()}, sotw_message.jump_url)
         await ctx.respond("SOTW started successfully in the designated channel!", ephemeral=True)
     else:
         await ctx.respond("Error: SOTW Channel ID not configured correctly.", ephemeral=True)
@@ -539,11 +539,7 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
     raffle_channel = bot.get_channel(RAFFLE_CHANNEL_ID)
     if raffle_channel:
         raffle_message = await raffle_channel.send(embed=embed)
-        await send_global_announcement(
-            title="🎟️ A New Raffle has Started! 🎟️",
-            description=f"A raffle has begun for a chance to win **{prize}**!",
-            message_url=raffle_message.jump_url
-        )
+        await send_global_announcement("raffle_start", {"prize": prize}, raffle_message.jump_url)
         await ctx.respond("Raffle created successfully!", ephemeral=True)
     else:
         await ctx.respond("Error: Raffle Channel ID not configured correctly.", ephemeral=True)
@@ -723,11 +719,7 @@ async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Op
     cursor.execute("INSERT INTO bingo_events (ends_at, board_json, message_id) VALUES (?, ?, ?)", (ends_at.isoformat(), board_json, message.id))
     conn.commit(); conn.close()
     
-    await send_global_announcement(
-        title="🧩 A New Clan Bingo Has Started! 🧩",
-        description="A new bingo board has been posted. Test your skills!",
-        message_url=message.jump_url
-    )
+    await send_global_announcement("bingo_start", {}, message.jump_url)
     await ctx.edit(content="Bingo event created successfully!")
 
 @bingo.command(name="complete", description="Submit a task for bingo completion.")
@@ -811,20 +803,18 @@ async def manage_points(
     reason: discord.Option(str, "The reason for this point adjustment.")
 ):
     await ctx.defer(ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO clan_points (discord_id) VALUES (?)", (member.id,))
     
-    if action == "add":
-        cursor.execute("UPDATE clan_points SET points = points + ? WHERE discord_id = ?", (amount, member.id))
-    else: # remove
-        cursor.execute("UPDATE clan_points SET points = MAX(0, points - ?) WHERE discord_id = ?", (amount, member.id))
-    
-    conn.commit()
-    new_balance = cursor.execute("SELECT points FROM clan_points WHERE discord_id = ?", (member.id,)).fetchone()[0]
-    conn.close()
-
     if action == "add":
         await award_points(member, amount, reason)
+    else: # remove
+        conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO clan_points (discord_id) VALUES (?)", (member.id,))
+        cursor.execute("UPDATE clan_points SET points = MAX(0, points - ?) WHERE discord_id = ?", (amount, member.id))
+        conn.commit()
+    
+    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
+    new_balance = cursor.execute("SELECT points FROM clan_points WHERE discord_id = ?", (member.id,)).fetchone()[0]
+    conn.close()
 
     await ctx.respond(f"Successfully updated {member.display_name}'s points. Their new balance is {new_balance}.", ephemeral=True)
 
