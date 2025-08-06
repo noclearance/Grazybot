@@ -1,4 +1,5 @@
 # bot.py
+# This is a comment to force a redeploy on Render.
 
 import discord
 from discord.ext import tasks
