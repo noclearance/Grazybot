@@ -1,0 +1,11 @@
+# Ignore the virtual environment
+venv/
+
+# Ignore the environment file with our secrets
+.env
+
+# Ignore the database file
+events.db
+
+# Ignore generated images
+*.png
