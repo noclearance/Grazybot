@@ -1,5 +1,4 @@
 # bot.py
-# This is a comment to force a redeploy on Render.
 
 import discord
 from discord.ext import tasks
@@ -314,6 +313,24 @@ async def event_manager():
             if now > ends_at:
                 await draw_raffle_winner(raffle_channel)
         conn.commit(); conn.close()
+
+# --- Web Server for Hosting ---
+async def handle_http(request):
+    return web.Response(text="Bot is alive!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_http)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get('PORT', 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    try:
+        await site.start()
+        print(f"Web server started on port {port}")
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
 
 # --- BOT EVENTS ---
 @bot.event
@@ -656,15 +673,12 @@ async def link(ctx: discord.ApplicationContext, username: discord.Option(str, "Y
 
 # --- Main Execution Block ---
 async def main():
-    await bot.start(TOKEN)
+    web_task = asyncio.create_task(start_web_server())
+    bot_task = asyncio.create_task(bot.start(TOKEN))
+    await asyncio.gather(web_task, bot_task)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-
-
 
 
 
