@@ -1,12 +1,112 @@
 [
   {
+    "name": "Catch 50 Sharks",
+    "description": "Fish 50 raw sharks.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Smith 100 Mithril Dart Tips",
+    "description": "Smith 100 mithril dart tips from mithril bars.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Complete a Farm Run (Herbs)",
+    "description": "Harvest herbs from at least 3 different herb patches.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Defeat a Skeletal Wyvern",
+    "description": "Kill one Skeletal Wyvern in the Asgarnian Ice Dungeon.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Fletch 250 Maple Longbows (u)",
+    "description": "Fletch 250 unstrung maple longbows.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Superheat 50 Gold Ores",
+    "description": "Use the Superheat Item spell to create 50 gold bars.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Complete a Hard Clue Scroll",
+    "description": "Complete all steps of a hard tier clue scroll.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Pickpocket a Hero",
+    "description": "Successfully pickpocket a Hero in Ardougne.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Craft 50 Chaos Runes",
+    "description": "Craft 50 chaos runes at the altar.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Kill a Kurask",
+    "description": "Kill one Kurask in the Fremennik or Iorwerth Slayer Dungeon.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Obtain a piece of the Pyromancer outfit",
+    "description": "Receive any piece of the Pyromancer outfit from a Wintertodt supply crate.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Defeat the King Black Dragon",
+    "description": "Kill the King Black Dragon in his lair.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Create a batch of 100 cannonballs",
+    "description": "Smelt 100 cannonballs at any furnace.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Catch 10 Red Chinchompas",
+    "description": "Catch 10 Red Chinchompas.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Complete a game of Soul Wars",
+    "description": "Finish a full game of Soul Wars and obtain Zeal Points.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Mix a Super Restore Potion",
+    "description": "Create a 4-dose Super Restore potion.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Defeat a Brutal Black Dragon",
+    "description": "Kill one Brutal Black Dragon in the Catacombs of Kourend.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Enchant a Diamond Amulet",
+    "description": "Enchant a diamond amulet into an Amulet of Power.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Chop 100 Teak Logs",
+    "description": "Chop 100 teak logs on Ape Atoll or Fossil Island.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Kill a Dust Devil",
+    "description": "Kill a Dust Devil in the Catacombs of Kourend or Smoke Dungeon.",
+    "difficulty": "common"
+  },
+  {
     "name": "Bury 50 Dragon Bones",
     "description": "Bury 50 Dragon Bones at any location.",
     "difficulty": "common"
   },
   {
     "name": "Catch 25 Monkfish",
-    "description": "Catch 25 raw monkfish (requires Swan Song quest).",
+    "description": "Catch 25 raw monkfish.",
     "difficulty": "common"
   },
   {
@@ -35,16 +135,6 @@
     "difficulty": "common"
   },
   {
-    "name": "Complete a Hard Clue Scroll",
-    "description": "Complete all steps of a hard tier clue scroll.",
-    "difficulty": "common"
-  },
-  {
-    "name": "Enter the Myths' Guild",
-    "description": "Enter the Myths' Guild (requires Dragon Slayer II).",
-    "difficulty": "common"
-  },
-  {
     "name": "Mine 25 Adamantite Ore",
     "description": "Mine 25 adamantite ore.",
     "difficulty": "common"
@@ -52,11 +142,6 @@
   {
     "name": "Burn 100 Yew Logs",
     "description": "Burn 100 yew logs.",
-    "difficulty": "common"
-  },
-  {
-    "name": "Defeat a Black Demon",
-    "description": "Kill one Black Demon.",
     "difficulty": "common"
   },
   {
@@ -97,6 +182,31 @@
   {
     "name": "Charge an Amulet of Glory",
     "description": "Charge an Amulet of Glory at the Fountain of Rune.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Defeat a Saradomin Wizard",
+    "description": "Defeat a Saradomin Wizard at the Saradomin Statue in the Wilderness.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Create a full set of Green d'hide",
+    "description": "Craft the body, chaps, and vambs.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Catch 50 Karambwans",
+    "description": "Catch 50 raw Karambwans.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Complete a game of Pest Control",
+    "description": "Successfully complete a veteran game of Pest Control.",
+    "difficulty": "common"
+  },
+  {
+    "name": "Kill a Maniacal Monkey",
+    "description": "Kill a Maniacal Monkey in Kruk's Dungeon.",
     "difficulty": "common"
   },
   {
@@ -155,7 +265,52 @@
     "difficulty": "uncommon"
   },
   {
-    "name": "Defeat a Demonic Gorilla",
+    "name": "Equip a full set of Obsidian Armour",
+    "description": "Equip the Obsidian platebody, platelegs, and helmet.",
+    "difficulty": "uncommon"
+  },
+  {
+    "name": "Defeat the Chaos Elemental",
+    "description": "Kill the Chaos Elemental in the Wilderness.",
+    "difficulty": "uncommon"
+  },
+  {
+    "name": "Obtain a Tome of Fire",
+    "description": "Receive a Tome of Fire from a supply crate at Wintertodt.",
+    "difficulty": "uncommon"
+  },
+  {
+    "name": "Equip a full set of Elite Void",
+    "description": "Upgrade a full set of regular void to its elite version.",
+    "difficulty": "uncommon"
+  },
+  {
+    "name": "Defeat Callisto",
+    "description": "Kill the bear boss in the Wilderness.",
+    "difficulty": "uncommon"
+  },
+  {
+    "name": "Defeat Venenatis",
+    "description": "Kill the spider boss in the Wilderness.",
+    "difficulty": "uncommon"
+  },
+  {
+    "name": "Defeat Vet'ion",
+    "description": "Kill the skeleton boss in the Wilderness.",
+    "difficulty": "uncommon"
+  },
+  {
+    "name": "Obtain a Dragon Pickaxe",
+    "description": "Receive a Dragon Pickaxe as a drop from any of the Wilderness bosses.",
+    "difficulty": "uncommon"
+  },
+  {
+    "name": "Equip a full set of Dragon Armour (g)",
+    "description": "Equip a full set of gold-trimmed dragon armour (platebody, platelegs/skirt, full helm).",
+    "difficulty": "uncommon"
+  },
+  {
+    "name": "Receive a Zenyte shard",
     "description": "Kill a Demonic Gorilla and receive a Zenyte shard.",
     "difficulty": "rare"
   },
@@ -188,5 +343,46 @@
     "name": "Complete a no-food Fight Caves run",
     "description": "Obtain a Fire Cape without consuming any food.",
     "difficulty": "rare"
+  },
+  {
+    "name": "Obtain a Twisted Buckler",
+    "description": "Receive a Twisted Buckler as a drop from the Chambers of Xeric.",
+    "difficulty": "rare"
+  },
+  {
+    "name": "Obtain a Jar of Darkness",
+    "description": "Receive a Jar of Darkness as a drop from Skotizo.",
+    "difficulty": "rare"
+  },
+  {
+    "name": "Equip a full set of 3rd Age Armour",
+    "description": "Equip a matching set of any 3rd Age melee, ranged, or magic armour.",
+    "difficulty": "rare"
+  },
+  {
+    "name": "Obtain a Smouldering Stone",
+    "description": "Receive a Smouldering Stone as a drop from Cerberus or Hellhounds.",
+    "difficulty": "rare"
+  },
+  {
+    "name": "Obtain an Elysian Sigil",
+    "description": "Receive an Elysian Sigil as a drop from the Corporeal Beast.",
+    "difficulty": "rare"
+  },
+  {
+    "name": "Complete a Master Clue Scroll",
+    "description": "Complete all steps of a Master tier clue scroll.",
+    "difficulty": "rare"
+  },
+  {
+    "name": "Obtain a Scythe of Vitur",
+    "description": "Receive a Scythe of Vitur as a drop from the Theatre of Blood.",
+    "difficulty": "rare"
+  },
+  {
+    "name": "Obtain a Tumeken's Shadow",
+    "description": "Receive a Tumeken's Shadow as a drop from the Tombs of Amascut.",
+    "difficulty": "rare"
   }
 ]
+

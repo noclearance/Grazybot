@@ -25,6 +25,8 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 DEBUG_GUILD_ID = int(os.getenv('DEBUG_GUILD_ID'))
 DB_FILE = "events.db"
 TASKS_FILE = "tasks.json"
+FONT_FILE = "RuneScape-UF.ttf"
+BACKGROUND_IMAGE = "bingo_background_dark.png"
 
 # Channel IDs
 SOTW_CHANNEL_ID = int(os.getenv('SOTW_CHANNEL_ID'))
@@ -282,42 +284,46 @@ async def draw_raffle_winner(channel: discord.TextChannel):
 
 def generate_bingo_image(tasks: list, completed_tasks: list = []):
     try:
-        width, height = 1000, 1000
-        background_color = (40, 26, 13) # Dark wood color
-        img = Image.new('RGB', (width, height), background_color)
+        img = Image.open(BACKGROUND_IMAGE).resize((1024, 1024))
         draw = ImageDraw.Draw(img)
         
         try:
-            title_font = ImageFont.truetype("arialbd.ttf", 48)
-            task_font = ImageFont.truetype("arial.ttf", 22)
+            font = ImageFont.truetype(FONT_FILE, 28)
         except IOError:
-            title_font = ImageFont.load_default()
-            task_font = ImageFont.load_default()
+            print(f"Could not load font {FONT_FILE}. Falling back to default.")
+            font = ImageFont.load_default()
         
-        draw.text((width/2, 50), "CLAN BINGO", font=title_font, fill=(255, 215, 0), anchor="ms", stroke_width=2, stroke_fill=(0,0,0))
-
-        grid_size = 5; cell_size = 170; margin = 50
-        line_color = (255, 215, 0) # Gold color
-        
-        for i in range(grid_size + 1):
-            draw.line([(margin + i * cell_size, margin + 100), (margin + i * cell_size, height - margin)], fill=line_color, width=3)
-            draw.line([(margin, margin + 100 + i * cell_size), (width - margin, margin + 100 + i * cell_size)], fill=line_color, width=3)
+        grid_size = 5
+        cell_width = 178
+        cell_height = 178
+        start_x = 70
+        start_y = 70
 
         for i, task in enumerate(tasks):
             if i >= 25: break
-            row = i // grid_size; col = i % grid_size
-            cell_x, cell_y = margin + col * cell_size, margin + 100 + row * cell_size
+            row = i // grid_size
+            col = i % grid_size
             
+            cell_x_start = start_x + (col * cell_width)
+            cell_y_start = start_y + (row * cell_height)
+
             if task['name'] in completed_tasks:
-                overlay = Image.new('RGBA', (cell_size, cell_size), (0, 255, 0, 90))
-                img.paste(overlay, (cell_x, cell_y), overlay)
+                overlay = Image.new('RGBA', (cell_width, cell_height), (0, 255, 0, 80))
+                img.paste(overlay, (cell_x_start, cell_y_start), overlay)
 
-            text_x = cell_x + (cell_size / 2); text_y = cell_y + (cell_size / 2)
-            task_name = task['name']; wrapped_text = textwrap.fill(task_name, width=15)
-            draw.text((text_x, text_y), wrapped_text, font=task_font, fill=(255, 255, 255), anchor="mm", align="center", stroke_width=1, stroke_fill=(0,0,0))
+            text_x = cell_x_start + (cell_width / 2)
+            text_y = cell_y_start + (cell_height / 2)
+            
+            task_name = task['name']
+            wrapped_text = textwrap.fill(task_name, width=14)
+            
+            draw.text((text_x, text_y), wrapped_text, font=font, fill=(255, 255, 255), anchor="mm", align="center", stroke_width=2, stroke_fill=(0,0,0))
 
-        output_path = "bingo_board.png"; img.save(output_path)
+        output_path = "bingo_board.png"
+        img.save(output_path)
         return output_path, None
+    except FileNotFoundError:
+        return None, f"Error: Could not find asset file. Make sure `{FONT_FILE}` and `{BACKGROUND_IMAGE}` are in the project folder."
     except Exception as e:
         return None, f"An unexpected error occurred during image generation: {e}"
 
@@ -890,4 +896,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
