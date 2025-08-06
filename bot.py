@@ -25,8 +25,6 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 DEBUG_GUILD_ID = int(os.getenv('DEBUG_GUILD_ID'))
 DB_FILE = "events.db"
 TASKS_FILE = "tasks.json"
-FONT_FILE = "RuneScape-UF.ttf"
-BACKGROUND_IMAGE = "bingo_background_dark.png"
 
 # Channel IDs
 SOTW_CHANNEL_ID = int(os.getenv('SOTW_CHANNEL_ID'))
@@ -175,8 +173,8 @@ async def award_points(member: discord.Member, amount: int, reason: str):
 
     try:
         details = {"amount": amount, "reason": reason}
-        dm_message = await generate_announcement_text("points_award", details)
-        dm_embed = discord.Embed(title="🏆 Points Awarded!", description=dm_message, color=discord.Color.green())
+        ai_dm_data = await generate_announcement_json("points_award", details)
+        dm_embed = discord.Embed.from_dict(ai_dm_data)
         dm_embed.add_field(name="New Balance", value=f"You now have **{new_balance}** Clan Points.")
         await member.send(embed=dm_embed)
     except discord.Forbidden:
@@ -199,13 +197,13 @@ async def create_competition(clan_id: str, skill: str, duration_days: int):
             else: return None, f"API Error: {(await response.json()).get('message', 'Failed to create competition.')}"
 
 async def create_competition_embed(data, author, poll_winner=False):
-    comp = data['competition']; comp_id = comp['id']; comp_title = comp['title']
-    title = f"🏆 Poll Finished! The winner is {comp['metric'].capitalize()}!" if poll_winner else "✅ New Competition Created!"
+    comp = data['competition']; comp_id = comp['id']
     
     details = {"skill": comp['metric'].capitalize()}
-    description = await generate_announcement_text("sotw_start", details)
-
-    embed = discord.Embed(title=title,description=description,color=discord.Color.gold() if poll_winner else discord.Color.green(),url=f"https://wiseoldman.net/competitions/{comp_id}")
+    ai_embed_data = await generate_announcement_json("sotw_start", details)
+    
+    embed = discord.Embed.from_dict(ai_embed_data)
+    embed.url = f"https://wiseoldman.net/competitions/{comp_id}"
     start_dt = datetime.fromisoformat(comp['startsAt'].replace('Z', '+00:00')); end_dt = datetime.fromisoformat(comp['endsAt'].replace('Z', '+00:00'))
     embed.add_field(name="Skill", value=comp['metric'].capitalize(), inline=True); embed.add_field(name="Duration", value=f"{(end_dt - start_dt).days} days", inline=True); embed.add_field(name="\u200b", value="\u200b", inline=True); embed.add_field(name="Start Time", value=f"<t:{int(start_dt.timestamp())}:F>", inline=True); embed.add_field(name="End Time", value=f"<t:{int(end_dt.timestamp())}:F>", inline=True)
     embed.set_footer(text=f"Competition started by {author.display_name}", icon_url=author.display_avatar.url)
@@ -222,35 +220,47 @@ async def generate_recap_text(gains_data: list) -> str:
     except Exception as e:
         print(f"An error occurred with the Gemini API: {e}"); return "The Taskmaster is currently reviewing the ledgers."
 
-async def generate_announcement_text(event_type: str, details: dict = None):
+async def generate_announcement_json(event_type: str, details: dict = None) -> dict:
     details = details or {}
-    base_prompt = "You are the Taskmaster for an Old School RuneScape clan. Your tone is engaging, epic, and encouraging. Write a short, flavorful announcement message for a clan event. Do not use emojis. Use Discord markdown like **bold** or *italics* to add emphasis."
+    
+    persona_prompt = """
+    You are TaskmasterGPT, a clever and slightly cheeky Clan Discord events bot.
+    Your task is to generate a JSON object for a Discord embed.
+    The JSON must have the following keys: "title" (string), "description" (string), and "color" (integer).
+    Maintain a confident but casual and epic tone when writing the text. Use Discord markdown like **bold** or *italics*. Do not use emojis.
+    """
     
     if event_type == "sotw_poll":
-        specific_prompt = "The time has come to choose our next battleground! A poll has been started to select the Skill of the Week. Cast your vote below and decide where we will focus our efforts. Make your voice heard!"
+        specific_prompt = "Generate an embed for a new Skill of the Week poll. The description should encourage members to vote."
+        fallback = {"title": "📊 Skill of the Week Poll", "description": "The time has come to choose our next battleground! Cast your vote below.", "color": 15105600}
     elif event_type == "sotw_start":
         skill = details.get('skill', 'a new skill')
-        specific_prompt = f"The clan has spoken! Our next challenge is upon us. For this week's Skill of the Week, we will be mastering **{skill}**. The competition begins now and the gains will be tracked meticulously. May the most dedicated warrior win!"
+        specific_prompt = f"Generate an embed announcing the start of a Skill of the Week competition for the skill: **{skill}**."
+        fallback = {"title": f"⚔️ SOTW Started: {skill}! ⚔️", "description": "The clan has spoken! The competition begins now. May the most dedicated warrior win!", "color": 5763719}
     elif event_type == "raffle_start":
         prize = details.get('prize', 'a grand prize')
-        specific_prompt = f"Fortune favors the bold! A new clan raffle has begun for a chance to win **{prize}**. A test of luck for our skilled warriors. How will you fare?"
+        specific_prompt = f"Generate an embed for a new clan raffle. The prize is **{prize}**."
+        fallback = {"title": "🎟️ A New Raffle has Begun!", "description": f"Fortune favors the bold! A new raffle has begun for a chance to win **{prize}**.", "color": 15844367}
     elif event_type == "bingo_start":
-        specific_prompt = "The Taskmaster has devised a new trial of skill and versatility! A clan bingo event has just begun. A fresh board of challenges awaits. Complete the tasks and prove your mastery. Let the games begin!"
+        specific_prompt = "Generate an embed announcing the start of a new clan bingo event."
+        fallback = {"title": "🧩 A New Clan Bingo Has Started! 🧩", "description": "The Taskmaster has devised a new trial! A fresh board of challenges awaits. Let the games begin!", "color": 11027200}
     elif event_type == "points_award":
         amount = details.get('amount', 'a number of')
         reason = details.get('reason', 'your excellent performance')
-        specific_prompt = f"You have been awarded **{amount} Clan Points** for *{reason}*! Clan Points are a measure of your dedication and skill. They can be used to purchase raffle tickets and earn prestigious roles in the clan. Well done."
+        specific_prompt = f"Generate an embed for a private message notifying a member they have been awarded **{amount} Clan Points** for *{reason}*. Explain that points can be used for rewards like raffle tickets."
+        fallback = {"title": "🏆 Points Awarded!", "description": f"You have been awarded **{amount} Clan Points** for *{reason}*! Clan Points are a measure of your dedication and can be used for rewards. Well done.", "color": 5763719}
     else:
-        return "A new event has started!"
+        return {"title": "🎉 New Event!", "description": "A new event has started!", "color": 3447003}
 
-    full_prompt = f"{base_prompt}\n\nWrite an announcement for the following event: {specific_prompt}"
+    full_prompt = f"{persona_prompt}\n\nRequest: {specific_prompt}\n\nJSON Output:"
     
     try:
         response = await ai_model.generate_content_async(full_prompt)
-        return response.text
+        clean_json_string = response.text.strip().lstrip("```json").rstrip("```")
+        return json.loads(clean_json_string)
     except Exception as e:
-        print(f"An error occurred during announcement generation: {e}")
-        return specific_prompt
+        print(f"An error occurred during JSON generation: {e}")
+        return fallback
 
 async def draw_raffle_winner(channel: discord.TextChannel):
     conn = sqlite3.connect(DB_FILE)
@@ -284,46 +294,42 @@ async def draw_raffle_winner(channel: discord.TextChannel):
 
 def generate_bingo_image(tasks: list, completed_tasks: list = []):
     try:
-        img = Image.open(BACKGROUND_IMAGE).resize((1024, 1024))
+        width, height = 1000, 1000
+        background_color = (40, 26, 13) # Dark wood color
+        img = Image.new('RGB', (width, height), background_color)
         draw = ImageDraw.Draw(img)
         
         try:
-            font = ImageFont.truetype(FONT_FILE, 28)
+            title_font = ImageFont.truetype("arialbd.ttf", 48)
+            task_font = ImageFont.truetype("arial.ttf", 22)
         except IOError:
-            print(f"Could not load font {FONT_FILE}. Falling back to default.")
-            font = ImageFont.load_default()
+            title_font = ImageFont.load_default()
+            task_font = ImageFont.load_default()
         
-        grid_size = 5
-        cell_width = 178
-        cell_height = 178
-        start_x = 70
-        start_y = 70
+        draw.text((width/2, 50), "CLAN BINGO", font=title_font, fill=(255, 215, 0), anchor="ms", stroke_width=2, stroke_fill=(0,0,0))
+
+        grid_size = 5; cell_size = 170; margin = 50
+        line_color = (255, 215, 0) # Gold color
+        
+        for i in range(grid_size + 1):
+            draw.line([(margin + i * cell_size, margin + 100), (margin + i * cell_size, height - margin)], fill=line_color, width=3)
+            draw.line([(margin, margin + 100 + i * cell_size), (width - margin, margin + 100 + i * cell_size)], fill=line_color, width=3)
 
         for i, task in enumerate(tasks):
             if i >= 25: break
-            row = i // grid_size
-            col = i % grid_size
+            row = i // grid_size; col = i % grid_size
+            cell_x, cell_y = margin + col * cell_size, margin + 100 + row * cell_size
             
-            cell_x_start = start_x + (col * cell_width)
-            cell_y_start = start_y + (row * cell_height)
-
             if task['name'] in completed_tasks:
-                overlay = Image.new('RGBA', (cell_width, cell_height), (0, 255, 0, 80))
-                img.paste(overlay, (cell_x_start, cell_y_start), overlay)
+                overlay = Image.new('RGBA', (cell_size, cell_size), (0, 255, 0, 90))
+                img.paste(overlay, (cell_x, cell_y), overlay)
 
-            text_x = cell_x_start + (cell_width / 2)
-            text_y = cell_y_start + (cell_height / 2)
-            
-            task_name = task['name']
-            wrapped_text = textwrap.fill(task_name, width=14)
-            
-            draw.text((text_x, text_y), wrapped_text, font=font, fill=(255, 255, 255), anchor="mm", align="center", stroke_width=2, stroke_fill=(0,0,0))
+            text_x = cell_x + (cell_size / 2); text_y = cell_y + (cell_size / 2)
+            task_name = task['name']; wrapped_text = textwrap.fill(task_name, width=15)
+            draw.text((text_x, text_y), wrapped_text, font=task_font, fill=(255, 255, 255), anchor="mm", align="center", stroke_width=1, stroke_fill=(0,0,0))
 
-        output_path = "bingo_board.png"
-        img.save(output_path)
+        output_path = "bingo_board.png"; img.save(output_path)
         return output_path, None
-    except FileNotFoundError:
-        return None, f"Error: Could not find asset file. Make sure `{FONT_FILE}` and `{BACKGROUND_IMAGE}` are in the project folder."
     except Exception as e:
         return None, f"An unexpected error occurred during image generation: {e}"
 
@@ -366,15 +372,9 @@ async def send_global_announcement(event_type: str, details: dict, message_url: 
         print("Error: Global announcements channel not found.")
         return
         
-    title_map = {
-        "sotw_start": "⚔️ A New Skill of the Week has Begun! ⚔️",
-        "raffle_start": "🎟️ A New Raffle has Started! 🎟️",
-        "bingo_start": "🧩 A New Clan Bingo Has Started! 🧩"
-    }
-    
-    description = await generate_announcement_text(event_type, details)
-    
-    embed = discord.Embed(title=title_map.get(event_type, "🎉 New Event!"), description=description, color=discord.Color.blue(), url=message_url)
+    ai_embed_data = await generate_announcement_json(event_type, details)
+    embed = discord.Embed.from_dict(ai_embed_data)
+    embed.url = message_url
     embed.add_field(name="Details", value=f"[Click here to view the event!]({message_url})")
     embed.set_footer(text="A new clan event has started!")
     
@@ -536,9 +536,9 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
     conn.commit(); conn.close()
     
     details = {"prize": prize}
-    description = await generate_announcement_text("raffle_start", details)
+    ai_embed_data = await generate_announcement_json("raffle_start", details)
+    embed = discord.Embed.from_dict(ai_embed_data)
     
-    embed = discord.Embed(title="🎟️ A New Raffle has Begun!", description=description, color=discord.Color.gold())
     embed.add_field(name="How to Enter", value="Use `/raffle enter` to get a ticket! (Max 10 per person)", inline=False)
     embed.add_field(name="Raffle Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
     embed.set_footer(text=f"Raffle started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
@@ -714,9 +714,9 @@ async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Op
     bingo_channel = bot.get_channel(BINGO_CHANNEL_ID)
     if not bingo_channel: return await ctx.edit(content="Error: Bingo Channel ID not configured correctly.")
     
-    description = await generate_announcement_text("bingo_start")
+    ai_embed_data = await generate_announcement_json("bingo_start")
+    embed = discord.Embed.from_dict(ai_embed_data)
     file = discord.File(image_path, filename="bingo_board.png")
-    embed = discord.Embed(title="🧩 A New Clan Bingo Has Started! 🧩", description=description, color=discord.Color.dark_teal())
     embed.set_image(url="attachment://bingo_board.png")
     embed.add_field(name="Event Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
     embed.set_footer(text=f"Bingo started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
