@@ -299,14 +299,13 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
         img = Image.new('RGB', (width, height), background_color)
         draw = ImageDraw.Draw(img)
         
-        try:
-            title_font = ImageFont.truetype("arialbd.ttf", 48)
-            task_font = ImageFont.truetype("arial.ttf", 22)
-        except IOError:
-            title_font = ImageFont.load_default()
-            task_font = ImageFont.load_default()
+        # Use Pillow's built-in default font. It's guaranteed to work on any system.
+        font = ImageFont.load_default()
         
-        draw.text((width/2, 50), "CLAN BINGO", font=title_font, fill=(255, 215, 0), anchor="ms", stroke_width=2, stroke_fill=(0,0,0))
+        # We can't change the size of the default font, so we'll just use it as is.
+        # This is a simplified but much more reliable approach.
+        
+        draw.text((width/2, 50), "CLAN BINGO", font=font, fill=(255, 215, 0), anchor="ms")
 
         grid_size = 5; cell_size = 170; margin = 50
         line_color = (255, 215, 0) # Gold color
@@ -325,12 +324,13 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
                 img.paste(overlay, (cell_x, cell_y), overlay)
 
             text_x = cell_x + (cell_size / 2); text_y = cell_y + (cell_size / 2)
-            task_name = task['name']; wrapped_text = textwrap.fill(task_name, width=15)
-            draw.text((text_x, text_y), wrapped_text, font=task_font, fill=(255, 255, 255), anchor="mm", align="center", stroke_width=1, stroke_fill=(0,0,0))
+            task_name = task['name']; wrapped_text = textwrap.fill(task_name, width=25) # Allow more width for default font
+            draw.text((text_x, text_y), wrapped_text, font=font, fill=(255, 255, 255), anchor="mm", align="center")
 
         output_path = "bingo_board.png"; img.save(output_path)
         return output_path, None
     except Exception as e:
+        print(f"An unexpected error occurred during image generation: {e}")
         return None, f"An unexpected error occurred during image generation: {e}"
 
 async def update_bingo_board_post():
@@ -516,7 +516,7 @@ async def view(ctx: discord.ApplicationContext):
     embed = discord.Embed(title=f"Leaderboard: {data['title']}", description=f"Current standings for the **{data['metric'].capitalize()}** competition.", color=discord.Color.purple(), url=f"https://wiseoldman.net/competitions/{data['id']}")
     leaderboard_text = ""
     for i, player in enumerate(data['participations'][:10]):
-        rank_emoji = {1: "🏆", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
+        rank_emoji = {1: " ", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
         leaderboard_text += f"{rank_emoji} **{player['player']['displayName']}**: {player['progress']['gained']:,} XP\n"
     if not leaderboard_text: leaderboard_text = "No participants have gained XP yet."
     embed.add_field(name="Top 10", value=leaderboard_text, inline=False)
