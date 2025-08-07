@@ -299,13 +299,14 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
         img = Image.new('RGB', (width, height), background_color)
         draw = ImageDraw.Draw(img)
         
-        # Use Pillow's built-in default font. It's guaranteed to work on any system.
-        font = ImageFont.load_default()
+        try:
+            title_font = ImageFont.truetype("arialbd.ttf", 48)
+            task_font = ImageFont.truetype("arial.ttf", 22)
+        except IOError:
+            title_font = ImageFont.load_default()
+            task_font = ImageFont.load_default()
         
-        # We can't change the size of the default font, so we'll just use it as is.
-        # This is a simplified but much more reliable approach.
-        
-        draw.text((width/2, 50), "CLAN BINGO", font=font, fill=(255, 215, 0), anchor="ms")
+        draw.text((width/2, 50), "CLAN BINGO", font=title_font, fill=(255, 215, 0), anchor="ms", stroke_width=2, stroke_fill=(0,0,0))
 
         grid_size = 5; cell_size = 170; margin = 50
         line_color = (255, 215, 0) # Gold color
@@ -324,13 +325,12 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
                 img.paste(overlay, (cell_x, cell_y), overlay)
 
             text_x = cell_x + (cell_size / 2); text_y = cell_y + (cell_size / 2)
-            task_name = task['name']; wrapped_text = textwrap.fill(task_name, width=25) # Allow more width for default font
-            draw.text((text_x, text_y), wrapped_text, font=font, fill=(255, 255, 255), anchor="mm", align="center")
+            task_name = task['name']; wrapped_text = textwrap.fill(task_name, width=15)
+            draw.text((text_x, text_y), wrapped_text, font=task_font, fill=(255, 255, 255), anchor="mm", align="center", stroke_width=1, stroke_fill=(0,0,0))
 
         output_path = "bingo_board.png"; img.save(output_path)
         return output_path, None
     except Exception as e:
-        print(f"An unexpected error occurred during image generation: {e}")
         return None, f"An unexpected error occurred during image generation: {e}"
 
 async def update_bingo_board_post():
@@ -469,6 +469,48 @@ async def on_ready():
     bot.add_view(SubmissionView())
 
 # --- BOT COMMANDS ---
+@bot.slash_command(name="help", description="Shows a list of all available commands.")
+async def help(ctx: discord.ApplicationContext):
+    await ctx.defer(ephemeral=True)
+    
+    embed = discord.Embed(
+        title="📜 GrazyBot Command List 📜",
+        description="Here are all the commands you can use to manage clan events.",
+        color=discord.Color.blurple()
+    )
+
+    member_commands = """
+    `/sotw view` - View the leaderboard for the current Skill of the Week.
+    `/raffle enter` - Get one ticket for the current raffle (max 10).
+    `/raffle view_tickets` - See how many tickets everyone has.
+    `/bingo board` - Get a link to the current bingo board.
+    `/bingo complete` - Submit a task for bingo completion.
+    `/points view` - Check your current Clan Point balance.
+    `/points leaderboard` - View the Clan Points leaderboard.
+    `/osrs link` - Link your Discord account to your OSRS name.
+    `/events view` - See all currently active events.
+    """
+    
+    admin_commands = """
+    `/sotw start` - Manually start a new SOTW competition.
+    `/sotw poll` - Start a poll to choose the next SOTW.
+    `/raffle start` - Start a new raffle.
+    `/raffle give_tickets` - Give raffle tickets to a member.
+    `/raffle edit_tickets` - Set a member's total ticket count.
+    `/raffle draw_now` - End the raffle and draw a winner immediately.
+    `/raffle cancel` - Cancel the current raffle.
+    `/bingo start` - Start a new clan bingo event.
+    `/bingo submissions` - View and manage pending bingo submissions.
+    `/admin announce` - Send a global announcement as the bot.
+    `/admin manage_points` - Add or remove Clan Points from a member.
+    """
+    
+    embed.add_field(name="✅ Member Commands", value=textwrap.dedent(member_commands), inline=False)
+    embed.add_field(name="👑 Admin Commands", value=textwrap.dedent(admin_commands), inline=False)
+    embed.set_footer(text="Let the games begin!")
+    
+    await ctx.respond(embed=embed, ephemeral=True)
+
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
 @sotw.command(name="start", description="Manually start a new SOTW competition.")
 async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_days: discord.Option(int, default=7)):
@@ -516,7 +558,7 @@ async def view(ctx: discord.ApplicationContext):
     embed = discord.Embed(title=f"Leaderboard: {data['title']}", description=f"Current standings for the **{data['metric'].capitalize()}** competition.", color=discord.Color.purple(), url=f"https://wiseoldman.net/competitions/{data['id']}")
     leaderboard_text = ""
     for i, player in enumerate(data['participations'][:10]):
-        rank_emoji = {1: " ", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
+        rank_emoji = {1: "🏆", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
         leaderboard_text += f"{rank_emoji} **{player['player']['displayName']}**: {player['progress']['gained']:,} XP\n"
     if not leaderboard_text: leaderboard_text = "No participants have gained XP yet."
     embed.add_field(name="Top 10", value=leaderboard_text, inline=False)
@@ -872,6 +914,48 @@ async def leaderboard(ctx: discord.ApplicationContext):
     
     await ctx.respond(embed=embed)
 
+@bot.slash_command(name="help", description="Shows a list of all available commands.")
+async def help(ctx: discord.ApplicationContext):
+    await ctx.defer(ephemeral=True)
+    
+    embed = discord.Embed(
+        title="📜 GrazyBot Command List 📜",
+        description="Here are all the commands you can use to manage clan events.",
+        color=discord.Color.blurple()
+    )
+
+    member_commands = """
+    `/sotw view` - View the leaderboard for the current Skill of the Week.
+    `/raffle enter` - Get one ticket for the current raffle (max 10).
+    `/raffle view_tickets` - See how many tickets everyone has.
+    `/bingo board` - Get a link to the current bingo board.
+    `/bingo complete` - Submit a task for bingo completion.
+    `/points view` - Check your current Clan Point balance.
+    `/points leaderboard` - View the Clan Points leaderboard.
+    `/osrs link` - Link your Discord account to your OSRS name.
+    `/events view` - See all currently active events.
+    """
+    
+    admin_commands = """
+    `/sotw start` - Manually start a new SOTW competition.
+    `/sotw poll` - Start a poll to choose the next SOTW.
+    `/raffle start` - Start a new raffle.
+    `/raffle give_tickets` - Give raffle tickets to a member.
+    `/raffle edit_tickets` - Set a member's total ticket count.
+    `/raffle draw_now` - End the raffle and draw a winner immediately.
+    `/raffle cancel` - Cancel the current raffle.
+    `/bingo start` - Start a new clan bingo event.
+    `/bingo submissions` - View and manage pending bingo submissions.
+    `/admin announce` - Send a global announcement as the bot.
+    `/admin manage_points` - Add or remove Clan Points from a member.
+    """
+    
+    embed.add_field(name="✅ Member Commands", value=textwrap.dedent(member_commands), inline=False)
+    embed.add_field(name="👑 Admin Commands", value=textwrap.dedent(admin_commands), inline=False)
+    embed.set_footer(text="Let the games begin!")
+    
+    await ctx.respond(embed=embed, ephemeral=True)
+
 # --- Main Execution Block ---
 async def run_bot():
     """A resilient function to start the bot and handle rate limits."""
@@ -896,4 +980,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
