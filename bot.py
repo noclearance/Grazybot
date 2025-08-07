@@ -469,48 +469,6 @@ async def on_ready():
     bot.add_view(SubmissionView())
 
 # --- BOT COMMANDS ---
-@bot.slash_command(name="help", description="Shows a list of all available commands.")
-async def help(ctx: discord.ApplicationContext):
-    await ctx.defer(ephemeral=True)
-    
-    embed = discord.Embed(
-        title="📜 GrazyBot Command List 📜",
-        description="Here are all the commands you can use to manage clan events.",
-        color=discord.Color.blurple()
-    )
-
-    member_commands = """
-    `/sotw view` - View the leaderboard for the current Skill of the Week.
-    `/raffle enter` - Get one ticket for the current raffle (max 10).
-    `/raffle view_tickets` - See how many tickets everyone has.
-    `/bingo board` - Get a link to the current bingo board.
-    `/bingo complete` - Submit a task for bingo completion.
-    `/points view` - Check your current Clan Point balance.
-    `/points leaderboard` - View the Clan Points leaderboard.
-    `/osrs link` - Link your Discord account to your OSRS name.
-    `/events view` - See all currently active events.
-    """
-    
-    admin_commands = """
-    `/sotw start` - Manually start a new SOTW competition.
-    `/sotw poll` - Start a poll to choose the next SOTW.
-    `/raffle start` - Start a new raffle.
-    `/raffle give_tickets` - Give raffle tickets to a member.
-    `/raffle edit_tickets` - Set a member's total ticket count.
-    `/raffle draw_now` - End the raffle and draw a winner immediately.
-    `/raffle cancel` - Cancel the current raffle.
-    `/bingo start` - Start a new clan bingo event.
-    `/bingo submissions` - View and manage pending bingo submissions.
-    `/admin announce` - Send a global announcement as the bot.
-    `/admin manage_points` - Add or remove Clan Points from a member.
-    """
-    
-    embed.add_field(name="✅ Member Commands", value=textwrap.dedent(member_commands), inline=False)
-    embed.add_field(name="👑 Admin Commands", value=textwrap.dedent(admin_commands), inline=False)
-    embed.set_footer(text="Let the games begin!")
-    
-    await ctx.respond(embed=embed, ephemeral=True)
-
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
 @sotw.command(name="start", description="Manually start a new SOTW competition.")
 async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_days: discord.Option(int, default=7)):
