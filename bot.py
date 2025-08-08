@@ -9,7 +9,8 @@ from aiohttp import web
 import asyncio
 from datetime import datetime, timedelta, timezone
 import random
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import json
 import textwrap
 from PIL import Image, ImageDraw, ImageFont
@@ -23,7 +24,7 @@ WOM_CLAN_ID = os.getenv('WOM_CLAN_ID')
 WOM_VERIFICATION_CODE = os.getenv('WOM_VERIFICATION_CODE')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 DEBUG_GUILD_ID = int(os.getenv('DEBUG_GUILD_ID'))
-DB_FILE = "events.db"
+DATABASE_URL = os.getenv('DATABASE_URL')
 TASKS_FILE = "tasks.json"
 
 # Channel IDs
@@ -45,18 +46,26 @@ bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 bot.active_polls = {}
 
 # --- Database Setup ---
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
+
 def setup_database():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS active_competitions (id INTEGER PRIMARY KEY, title TEXT, starts_at TEXT, ends_at TEXT, midway_ping_sent INTEGER DEFAULT 0, final_ping_sent INTEGER DEFAULT 0, winners_awarded INTEGER DEFAULT 0)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY DEFAULT 1, prize TEXT, ends_at TEXT, winner_id INTEGER)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS raffle_entries (entry_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, source TEXT DEFAULT 'self')")
-    cursor.execute("CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY DEFAULT 1, ends_at TEXT, board_json TEXT, message_id INTEGER)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS bingo_submissions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, task_name TEXT, proof_url TEXT, status TEXT DEFAULT 'pending')")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS active_competitions (
+        id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, 
+        midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE
+    )""")
+    cursor.execute("CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS raffle_entries (entry_id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, source TEXT DEFAULT 'self')")
+    cursor.execute("CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY, ends_at TIMESTAMPTZ, board_json TEXT, message_id BIGINT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS bingo_submissions (id SERIAL PRIMARY KEY, user_id BIGINT, task_name TEXT, proof_url TEXT, status TEXT DEFAULT 'pending')")
     cursor.execute("CREATE TABLE IF NOT EXISTS bingo_completed_tiles (task_name TEXT PRIMARY KEY)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id INTEGER PRIMARY KEY, osrs_name TEXT NOT NULL)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id INTEGER PRIMARY KEY, points INTEGER DEFAULT 0)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
     conn.commit()
+    cursor.close()
     conn.close()
 
 # --- SOTW Poll View ---
@@ -65,11 +74,12 @@ class SotwPollView(discord.ui.View):
         super().__init__(timeout=86400); self.author = author; self.votes = {};
     
     async def create_embed(self):
-        base_description = await generate_announcement_text("sotw_poll")
+        ai_embed_data = await generate_announcement_json("sotw_poll")
         vote_description = "\n\n**Current Votes:**\n"
         for skill, voters in self.votes.items(): vote_description += f"**{skill.capitalize()}**: {len(voters)} vote(s)\n"
         
-        embed = discord.Embed(title="📊 Skill of the Week Poll", description=base_description + vote_description, color=discord.Color.orange()); 
+        embed = discord.Embed.from_dict(ai_embed_data)
+        embed.description += vote_description
         embed.set_footer(text=f"Poll started by {self.author.display_name}", icon_url=self.author.display_avatar.url); 
         return embed
 
@@ -123,18 +133,20 @@ class SubmissionView(discord.ui.View):
     async def approve_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         submission_id = int(interaction.message.embeds[0].footer.text.split(": ")[1])
         
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        submission_data = cursor.execute("SELECT user_id, task_name FROM bingo_submissions WHERE id = ?", (submission_id,)).fetchone()
+        cursor.execute("SELECT user_id, task_name FROM bingo_submissions WHERE id = %s", (submission_id,))
+        submission_data = cursor.fetchone()
         if not submission_data:
             conn.close()
             return await interaction.response.send_message("This submission was already handled.", ephemeral=True)
             
         user_id, task_name = submission_data
         
-        cursor.execute("UPDATE bingo_submissions SET status = 'approved' WHERE id = ?", (submission_id,))
-        cursor.execute("INSERT OR IGNORE INTO bingo_completed_tiles (task_name) VALUES (?)", (task_name,))
+        cursor.execute("UPDATE bingo_submissions SET status = 'approved' WHERE id = %s", (submission_id,))
+        cursor.execute("INSERT INTO bingo_completed_tiles (task_name) VALUES (%s) ON CONFLICT (task_name) DO NOTHING", (task_name,))
         conn.commit()
+        cursor.close()
         conn.close()
 
         await interaction.message.delete()
@@ -150,10 +162,11 @@ class SubmissionView(discord.ui.View):
     async def deny_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         submission_id = int(interaction.message.embeds[0].footer.text.split(": ")[1])
         
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE bingo_submissions SET status = 'denied' WHERE id = ?", (submission_id,))
+        cursor.execute("UPDATE bingo_submissions SET status = 'denied' WHERE id = %s", (submission_id,))
         conn.commit()
+        cursor.close()
         conn.close()
 
         await interaction.message.delete()
@@ -163,12 +176,13 @@ class SubmissionView(discord.ui.View):
 async def award_points(member: discord.Member, amount: int, reason: str):
     if not member or member.bot: return
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO clan_points (discord_id, points) VALUES (?, 0)", (member.id,))
-    cursor.execute("UPDATE clan_points SET points = points + ? WHERE discord_id = ?", (amount, member.id))
+    cursor.execute("INSERT INTO clan_points (discord_id, points) VALUES (%s, 0) ON CONFLICT (discord_id) DO NOTHING", (member.id,))
+    cursor.execute("UPDATE clan_points SET points = points + %s WHERE discord_id = %s RETURNING points", (amount, member.id))
+    new_balance = cursor.fetchone()[0]
     conn.commit()
-    new_balance = cursor.execute("SELECT points FROM clan_points WHERE discord_id = ?", (member.id,)).fetchone()[0]
+    cursor.close()
     conn.close()
 
     try:
@@ -190,9 +204,9 @@ async def create_competition(clan_id: str, skill: str, duration_days: int):
         async with session.post(url, json=payload) as response:
             if response.status == 201:
                 comp_data = await response.json()
-                conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-                cursor.execute("INSERT INTO active_competitions (id, title, starts_at, ends_at) VALUES (?, ?, ?, ?)", (comp_data['competition']['id'], comp_data['competition']['title'], comp_data['competition']['startsAt'], comp_data['competition']['endsAt']))
-                conn.commit(); conn.close()
+                conn = get_db_connection(); cursor = conn.cursor()
+                cursor.execute("INSERT INTO active_competitions (id, title, starts_at, ends_at) VALUES (%s, %s, %s, %s)", (comp_data['competition']['id'], comp_data['competition']['title'], comp_data['competition']['startsAt'], comp_data['competition']['endsAt']))
+                conn.commit(); cursor.close(); conn.close()
                 return comp_data, None
             else: return None, f"API Error: {(await response.json()).get('message', 'Failed to create competition.')}"
 
@@ -263,15 +277,16 @@ async def generate_announcement_json(event_type: str, details: dict = None) -> d
         return fallback
 
 async def draw_raffle_winner(channel: discord.TextChannel):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.row_factory = sqlite3.Row
-    raffle_data = cursor.execute("SELECT * FROM raffles LIMIT 1").fetchone()
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cursor.execute("SELECT * FROM raffles LIMIT 1")
+    raffle_data = cursor.fetchone()
     if not raffle_data:
-        conn.close()
+        cursor.close(); conn.close()
         return "No active raffle to draw."
     prize = raffle_data['prize']
-    entries = cursor.execute("SELECT user_id FROM raffle_entries").fetchall()
+    cursor.execute("SELECT user_id FROM raffle_entries")
+    entries = cursor.fetchall()
     if not entries:
         await channel.send(f"The raffle for **{prize}** has ended, but unfortunately, no one entered.")
     else:
@@ -286,9 +301,10 @@ async def draw_raffle_winner(channel: discord.TextChannel):
         embed.set_footer(text="Thanks to everyone for participating!")
         embed.set_thumbnail(url=winner_user.display_avatar.url)
         await channel.send(content=f"Congratulations {winner_user.mention}!", embed=embed)
-        cursor.execute("UPDATE raffles SET winner_id = ? WHERE id = 1", (winner_id,))
+        cursor.execute("UPDATE raffles SET winner_id = %s WHERE id = 1", (winner_id,))
     cursor.execute("DELETE FROM raffles"); cursor.execute("DELETE FROM raffle_entries")
     conn.commit()
+    cursor.close()
     conn.close()
     return f"Winner drawn for the '{prize}' raffle."
 
@@ -334,18 +350,20 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
         return None, f"An unexpected error occurred during image generation: {e}"
 
 async def update_bingo_board_post():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    event_data = cursor.execute("SELECT board_json, message_id FROM bingo_events LIMIT 1").fetchone()
+    cursor.execute("SELECT board_json, message_id FROM bingo_events LIMIT 1")
+    event_data = cursor.fetchone()
     if not event_data:
-        conn.close()
+        cursor.close(); conn.close()
         return
     
     board_tasks = json.loads(event_data[0])
     message_id = event_data[1]
     
-    completed_tiles = [row[0] for row in cursor.execute("SELECT task_name FROM bingo_completed_tiles").fetchall()]
-    conn.close()
+    cursor.execute("SELECT task_name FROM bingo_completed_tiles")
+    completed_tiles = [row[0] for row in cursor.fetchall()]
+    cursor.close(); conn.close()
 
     image_path, error = generate_bingo_image(board_tasks, completed_tiles)
     if error:
@@ -400,10 +418,11 @@ async def event_manager():
 
     sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
     if sotw_channel:
-        conn = sqlite3.connect(DB_FILE); cursor = conn.cursor(); cursor.row_factory = sqlite3.Row
-        competitions = cursor.execute("SELECT * FROM active_competitions").fetchall()
+        conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute("SELECT * FROM active_competitions")
+        competitions = cursor.fetchall()
         for comp in competitions:
-            ends_at = datetime.fromisoformat(comp['ends_at'].replace('Z', '+00:00')); starts_at = datetime.fromisoformat(comp['starts_at'].replace('Z', '+00:00'))
+            ends_at = comp['ends_at']; starts_at = comp['starts_at']
             
             if now > ends_at and not comp['winners_awarded']:
                 details_url = f"https://api.wiseoldman.net/v2/competitions/{comp['id']}"
@@ -414,33 +433,35 @@ async def event_manager():
                             point_values = [100, 50, 25] # 1st, 2nd, 3rd
                             for i, participant in enumerate(comp_data.get('participations', [])[:3]):
                                 osrs_name = participant['player']['displayName']
-                                conn_inner = sqlite3.connect(DB_FILE)
+                                conn_inner = get_db_connection()
                                 cursor_inner = conn_inner.cursor()
-                                user_data = cursor_inner.execute("SELECT discord_id FROM user_links WHERE osrs_name = ?", (osrs_name,)).fetchone()
+                                cursor_inner.execute("SELECT discord_id FROM user_links WHERE osrs_name = %s", (osrs_name,))
+                                user_data = cursor_inner.fetchone()
                                 conn_inner.close()
                                 if user_data:
                                     member = bot.get_guild(DEBUG_GUILD_ID).get_member(user_data[0])
                                     if member:
                                         await award_points(member, point_values[i], f"placing #{i+1} in the {comp['title']} SOTW")
-                cursor.execute("UPDATE active_competitions SET winners_awarded = 1 WHERE id = ?", (comp['id'],))
+                cursor.execute("UPDATE active_competitions SET winners_awarded = TRUE WHERE id = %s", (comp['id'],))
 
             if not comp['final_ping_sent'] and (ends_at - now) <= timedelta(hours=1):
                 reminder_embed = discord.Embed(title="⏳ Final Hour!", description=f"The **{comp['title']}** competition ends in less than an hour!", color=discord.Color.red(), url=f"https://wiseoldman.net/competitions/{comp['id']}")
-                await sotw_channel.send(content="@everyone", embed=reminder_embed); cursor.execute("UPDATE active_competitions SET final_ping_sent = 1 WHERE id = ?", (comp['id'],))
+                await sotw_channel.send(content="@everyone", embed=reminder_embed); cursor.execute("UPDATE active_competitions SET final_ping_sent = TRUE WHERE id = %s", (comp['id'],))
             elif not comp['midway_ping_sent'] and now >= starts_at + ((ends_at - starts_at) / 2):
                 midway_embed = discord.Embed(title="½ Midway Point Reached!", description=f"The **{comp['title']}** competition is halfway through!", color=discord.Color.yellow(), url=f"https://wiseoldman.net/competitions/{comp['id']}")
-                await sotw_channel.send(embed=midway_embed); cursor.execute("UPDATE active_competitions SET midway_ping_sent = 1 WHERE id = ?", (comp['id'],))
-        conn.commit(); conn.close()
+                await sotw_channel.send(embed=midway_embed); cursor.execute("UPDATE active_competitions SET midway_ping_sent = TRUE WHERE id = %s", (comp['id'],))
+        conn.commit(); cursor.close(); conn.close()
     
     raffle_channel = bot.get_channel(RAFFLE_CHANNEL_ID)
     if raffle_channel:
-        conn = sqlite3.connect(DB_FILE); cursor = conn.cursor(); cursor.row_factory = sqlite3.Row
-        raffle_data = cursor.execute("SELECT * FROM raffles WHERE winner_id IS NULL LIMIT 1").fetchone()
+        conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute("SELECT * FROM raffles WHERE winner_id IS NULL LIMIT 1")
+        raffle_data = cursor.fetchone()
         if raffle_data:
-            ends_at = datetime.fromisoformat(raffle_data['ends_at'])
+            ends_at = raffle_data['ends_at']
             if now > ends_at:
                 await draw_raffle_winner(raffle_channel)
-        conn.commit(); conn.close()
+        conn.commit(); cursor.close(); conn.close()
 
 # --- Web Server for Hosting ---
 async def handle_http(request):
@@ -529,11 +550,11 @@ raffle = bot.create_group("raffle", "Commands for managing raffles.")
 @discord.default_permissions(manage_events=True)
 async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(str, "What is the prize?"), duration_days: discord.Option(float, "How many days will it last?")):
     await ctx.defer(ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("DELETE FROM raffles"); cursor.execute("DELETE FROM raffle_entries")
     ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
-    cursor.execute("INSERT INTO raffles (prize, ends_at) VALUES (?, ?)", (prize, ends_at.isoformat()))
-    conn.commit(); conn.close()
+    cursor.execute("INSERT INTO raffles (id, prize, ends_at) VALUES (1, %s, %s)", (prize, ends_at.isoformat()))
+    conn.commit(); cursor.close(); conn.close()
     
     details = {"prize": prize}
     ai_embed_data = await generate_announcement_json("raffle_start", details)
@@ -553,34 +574,39 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
 @raffle.command(name="enter", description="Get one ticket for the current raffle (max 10).")
 async def enter_raffle(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    raffle_data = cursor.execute("SELECT prize FROM raffles LIMIT 1").fetchone()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT prize FROM raffles LIMIT 1")
+    raffle_data = cursor.fetchone()
     if not raffle_data:
-        conn.close(); return await ctx.respond("There is no active raffle to enter right now.", ephemeral=True)
-    self_entries = cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = ? AND source = 'self'", (ctx.author.id,)).fetchone()[0]
+        cursor.close(); conn.close(); return await ctx.respond("There is no active raffle to enter right now.", ephemeral=True)
+    cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = %s AND source = 'self'", (ctx.author.id,))
+    self_entries = cursor.fetchone()[0]
     if self_entries >= 10:
-        conn.close(); return await ctx.respond("You have already claimed your maximum of 10 tickets for this raffle!", ephemeral=True)
-    cursor.execute("INSERT INTO raffle_entries (user_id, source) VALUES (?, 'self')", (ctx.author.id,))
+        cursor.close(); conn.close(); return await ctx.respond("You have already claimed your maximum of 10 tickets for this raffle!", ephemeral=True)
+    cursor.execute("INSERT INTO raffle_entries (user_id, source) VALUES (%s, 'self')", (ctx.author.id,))
     conn.commit()
-    total_tickets = cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = ?", (ctx.author.id,)).fetchone()[0]
-    conn.close()
+    cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = %s", (ctx.author.id,))
+    total_tickets = cursor.fetchone()[0]
+    cursor.close(); conn.close()
     await ctx.respond(f"You have successfully claimed a ticket for the **{raffle_data[0]}** raffle! You now have a total of {total_tickets} ticket(s).", ephemeral=True)
 
 @raffle.command(name="give_tickets", description="ADMIN: Give raffle tickets to a member.")
 @discord.default_permissions(manage_events=True)
 async def give_tickets(ctx: discord.ApplicationContext, member: discord.Option(discord.Member, "The member to give tickets to."), amount: discord.Option(int, "How many tickets to give.", min_value=1)):
     await ctx.defer(ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    raffle_data = cursor.execute("SELECT id FROM raffles LIMIT 1").fetchone()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT id FROM raffles LIMIT 1")
+    raffle_data = cursor.fetchone()
     if not raffle_data:
-        conn.close(); return await ctx.respond("There is no active raffle.", ephemeral=True)
+        cursor.close(); conn.close(); return await ctx.respond("There is no active raffle.", ephemeral=True)
     
     entries = [(member.id, 'admin') for _ in range(amount)]
-    cursor.executemany("INSERT INTO raffle_entries (user_id, source) VALUES (?, ?)", entries)
+    cursor.executemany("INSERT INTO raffle_entries (user_id, source) VALUES (%s, %s)", entries)
     conn.commit()
     
-    total_tickets = cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = ?", (member.id,)).fetchone()[0]
-    conn.close()
+    cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = %s", (member.id,))
+    total_tickets = cursor.fetchone()[0]
+    cursor.close(); conn.close()
     
     await ctx.respond(f"Successfully gave {amount} ticket(s) to {member.display_name}. They now have {total_tickets} ticket(s).", ephemeral=True)
 
@@ -592,32 +618,35 @@ async def edit_tickets(
     new_total: discord.Option(int, "The new total number of tickets they should have.", min_value=0)
 ):
     await ctx.defer(ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    raffle_data = cursor.execute("SELECT id FROM raffles LIMIT 1").fetchone()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT id FROM raffles LIMIT 1")
+    raffle_data = cursor.fetchone()
     if not raffle_data:
-        conn.close(); return await ctx.respond("There is no active raffle.", ephemeral=True)
+        cursor.close(); conn.close(); return await ctx.respond("There is no active raffle.", ephemeral=True)
         
-    cursor.execute("DELETE FROM raffle_entries WHERE user_id = ?", (member.id,))
+    cursor.execute("DELETE FROM raffle_entries WHERE user_id = %s", (member.id,))
     
     if new_total > 0:
         entries = [(member.id, 'admin_edit') for _ in range(new_total)]
-        cursor.executemany("INSERT INTO raffle_entries (user_id, source) VALUES (?, ?)", entries)
+        cursor.executemany("INSERT INTO raffle_entries (user_id, source) VALUES (%s, %s)", entries)
     
     conn.commit()
-    conn.close()
+    cursor.close(); conn.close()
     
     await ctx.respond(f"Successfully set {member.display_name}'s ticket count to {new_total}.", ephemeral=True)
 
 @raffle.command(name="view_tickets", description="View the current ticket count for all participants.")
 async def view_tickets(ctx: discord.ApplicationContext):
     await ctx.defer()
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    raffle_data = cursor.execute("SELECT prize FROM raffles LIMIT 1").fetchone()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT prize FROM raffles LIMIT 1")
+    raffle_data = cursor.fetchone()
     if not raffle_data:
-        conn.close(); return await ctx.respond("There is no active raffle.")
+        cursor.close(); conn.close(); return await ctx.respond("There is no active raffle.")
     
-    entries = cursor.execute("SELECT user_id, COUNT(user_id) FROM raffle_entries GROUP BY user_id ORDER BY COUNT(user_id) DESC").fetchall()
-    conn.close()
+    cursor.execute("SELECT user_id, COUNT(user_id) FROM raffle_entries GROUP BY user_id ORDER BY COUNT(user_id) DESC")
+    entries = cursor.fetchall()
+    cursor.close(); conn.close()
 
     embed = discord.Embed(title=f"🎟️ Raffle Tickets for '{raffle_data[0]}'", color=discord.Color.gold())
     if not entries:
@@ -647,12 +676,13 @@ async def draw_now(ctx: discord.ApplicationContext):
 @discord.default_permissions(manage_events=True)
 async def cancel_raffle(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    raffle_data = cursor.execute("SELECT prize FROM raffles LIMIT 1").fetchone()
-    if not raffle_data: conn.close(); return await ctx.respond("There is no active raffle to cancel.")
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT prize FROM raffles LIMIT 1")
+    raffle_data = cursor.fetchone()
+    if not raffle_data: cursor.close(); conn.close(); return await ctx.respond("There is no active raffle to cancel.")
     prize = raffle_data[0]
     cursor.execute("DELETE FROM raffles"); cursor.execute("DELETE FROM raffle_entries")
-    conn.commit(); conn.close()
+    conn.commit(); cursor.close(); conn.close()
     channel = bot.get_channel(RAFFLE_CHANNEL_ID)
     if channel: await channel.send(f"The raffle for **{prize}** has been cancelled by an admin.")
     await ctx.respond("Raffle successfully cancelled.")
@@ -661,20 +691,22 @@ events = bot.create_group("events", "View all active clan events.")
 @events.command(name="view", description="Shows all currently active competitions and raffles.")
 async def view_events(ctx: discord.ApplicationContext):
     await ctx.defer()
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor(); cursor.row_factory = sqlite3.Row
-    comp = cursor.execute("SELECT * FROM active_competitions ORDER BY ends_at DESC LIMIT 1").fetchone()
-    raf = cursor.execute("SELECT * FROM raffles LIMIT 1").fetchone()
-    conn.close()
+    conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cursor.execute("SELECT * FROM active_competitions ORDER BY ends_at DESC LIMIT 1")
+    comp = cursor.fetchone()
+    cursor.execute("SELECT * FROM raffles LIMIT 1")
+    raf = cursor.fetchone()
+    cursor.close(); conn.close()
     embed = discord.Embed(title="📅 Clan Event Status", description="Here's a look at all the events currently running.", color=discord.Color.blurple())
     if comp:
-        comp_ends_dt = datetime.fromisoformat(comp['ends_at'].replace('Z', '+00:00'))
+        comp_ends_dt = comp['ends_at']
         comp_info = (f"**Title:** [{comp['title']}](https://wiseoldman.net/competitions/{comp['id']})\n"
                      f"**Ends:** <t:{int(comp_ends_dt.timestamp())}:R>")
         embed.add_field(name="⚔️ Active Competition", value=comp_info, inline=False)
     else:
         embed.add_field(name="⚔️ Active Competition", value="There is no SOTW competition currently running.", inline=False)
     if raf:
-        raf_ends_dt = datetime.fromisoformat(raf['ends_at'])
+        raf_ends_dt = raf['ends_at']
         raf_info = (f"**Prize:** {raf['prize']}\n"
                     f"**Ends:** <t:{int(raf_ends_dt.timestamp())}:R>")
         embed.add_field(name="🎟️ Active Raffle", value=raf_info, inline=False)
@@ -704,8 +736,8 @@ async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Op
     if len(board_tasks) < 25:
         return await ctx.edit(content="Error: Not enough tasks in total to create a 25-slot board.")
     random.shuffle(board_tasks); board_tasks = board_tasks[:25]
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    cursor.execute("DELETE FROM bingo_events"); cursor.execute("DELETE FROM bingo_progress"); cursor.execute("DELETE FROM bingo_completed_tiles")
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("DELETE FROM bingo_events"); cursor.execute("DELETE FROM bingo_submissions"); cursor.execute("DELETE FROM bingo_completed_tiles")
     ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
     board_json = json.dumps(board_tasks)
     image_path, error = generate_bingo_image(board_tasks)
@@ -722,8 +754,8 @@ async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Op
     embed.set_footer(text=f"Bingo started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
     message = await bingo_channel.send(embed=embed, file=file)
     
-    cursor.execute("INSERT INTO bingo_events (ends_at, board_json, message_id) VALUES (?, ?, ?)", (ends_at.isoformat(), board_json, message.id))
-    conn.commit(); conn.close()
+    cursor.execute("INSERT INTO bingo_events (id, ends_at, board_json, message_id) VALUES (1, %s, %s, %s)", (ends_at, board_json, message.id))
+    conn.commit(); cursor.close(); conn.close()
     
     await send_global_announcement("bingo_start", {}, message.jump_url)
     await ctx.edit(content="Bingo event created successfully!")
@@ -731,27 +763,29 @@ async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Op
 @bingo.command(name="complete", description="Submit a task for bingo completion.")
 async def complete_task(ctx: discord.ApplicationContext, task: discord.Option(str, "The name of the task you completed."), proof: discord.Option(str, "A URL link to a screenshot or video proof.")):
     await ctx.defer(ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    board_data = cursor.execute("SELECT board_json FROM bingo_events LIMIT 1").fetchone()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT board_json FROM bingo_events LIMIT 1")
+    board_data = cursor.fetchone()
     if not board_data:
-        conn.close(); return await ctx.respond("There is no active bingo event.", ephemeral=True)
+        cursor.close(); conn.close(); return await ctx.respond("There is no active bingo event.", ephemeral=True)
     
     board_tasks = json.loads(board_data[0])
     task_names = [t['name'] for t in board_tasks]
     if task not in task_names:
-        conn.close(); return await ctx.respond("That task is not on the current bingo board.", ephemeral=True)
+        cursor.close(); conn.close(); return await ctx.respond("That task is not on the current bingo board.", ephemeral=True)
 
-    cursor.execute("INSERT INTO bingo_submissions (user_id, task_name, proof_url) VALUES (?, ?, ?)", (ctx.author.id, task, proof))
-    conn.commit(); conn.close()
+    cursor.execute("INSERT INTO bingo_submissions (user_id, task_name, proof_url) VALUES (%s, %s, %s)", (ctx.author.id, task, proof))
+    conn.commit(); cursor.close(); conn.close()
     await ctx.respond("Your submission has been sent to the admins for review!", ephemeral=True)
 
 @bingo.command(name="submissions", description="ADMIN: View pending bingo task submissions.")
 @discord.default_permissions(manage_events=True)
 async def view_submissions(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor(); cursor.row_factory = sqlite3.Row
-    pending = cursor.execute("SELECT * FROM bingo_submissions WHERE status = 'pending'").fetchall()
-    conn.close()
+    conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cursor.execute("SELECT * FROM bingo_submissions WHERE status = 'pending'")
+    pending = cursor.fetchall()
+    cursor.close(); conn.close()
     if not pending:
         return await ctx.respond("There are no pending bingo submissions.", ephemeral=True)
     
@@ -767,9 +801,10 @@ async def view_submissions(ctx: discord.ApplicationContext):
 @bingo.command(name="board", description="View the current bingo board.")
 async def view_board(ctx: discord.ApplicationContext):
     await ctx.defer()
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    event_data = cursor.execute("SELECT message_id FROM bingo_events LIMIT 1").fetchone()
-    conn.close()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT message_id FROM bingo_events LIMIT 1")
+    event_data = cursor.fetchone()
+    cursor.close(); conn.close()
     if not event_data or not event_data[0]:
         return await ctx.respond("There is no active bingo board to display.")
     
@@ -813,16 +848,48 @@ async def manage_points(
     if action == "add":
         await award_points(member, amount, reason)
     else: # remove
-        conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-        cursor.execute("INSERT OR IGNORE INTO clan_points (discord_id) VALUES (?)", (member.id,))
-        cursor.execute("UPDATE clan_points SET points = MAX(0, points - ?) WHERE discord_id = ?", (amount, member.id))
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("INSERT INTO clan_points (discord_id, points) VALUES (%s, 0) ON CONFLICT (discord_id) DO NOTHING", (member.id,))
+        cursor.execute("UPDATE clan_points SET points = GREATEST(0, points - %s) WHERE discord_id = %s", (amount, member.id))
         conn.commit()
     
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    new_balance = cursor.execute("SELECT points FROM clan_points WHERE discord_id = ?", (member.id,)).fetchone()[0]
-    conn.close()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT points FROM clan_points WHERE discord_id = %s", (member.id,))
+    new_balance = cursor.fetchone()[0]
+    cursor.close(); conn.close()
 
     await ctx.respond(f"Successfully updated {member.display_name}'s points. Their new balance is {new_balance}.", ephemeral=True)
+
+@admin.command(name="award_sotw_winners", description="Manually award points for a past SOTW competition.")
+@discord.default_permissions(manage_guild=True)
+async def award_sotw_winners(ctx: discord.ApplicationContext, competition_id: discord.Option(int, "The ID of the competition from Wise Old Man.")):
+    await ctx.defer(ephemeral=True)
+    details_url = f"https://api.wiseoldman.net/v2/competitions/{competition_id}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(details_url) as response:
+            if response.status != 200:
+                return await ctx.respond(f"Could not fetch details for competition ID {competition_id}.")
+            comp_data = await response.json()
+
+    awarded_to = []
+    point_values = [100, 50, 25]
+    for i, participant in enumerate(comp_data.get('participations', [])[:3]):
+        osrs_name = participant['player']['displayName']
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("SELECT discord_id FROM user_links WHERE osrs_name = %s", (osrs_name,))
+        user_data = cursor.fetchone()
+        conn.close()
+        if user_data:
+            member = ctx.guild.get_member(user_data[0])
+            if member:
+                await award_points(member, point_values[i], f"placing #{i+1} in the {comp_data['title']} SOTW")
+                awarded_to.append(f"#{i+1}: {member.display_name} ({point_values[i]} points)")
+
+    if not awarded_to:
+        return await ctx.respond("No winners could be found or linked for that competition.")
+
+    await ctx.respond("Successfully awarded points to:\n" + "\n".join(awarded_to))
+
 
 osrs = bot.create_group("osrs", "Commands related to your OSRS account.")
 @osrs.command(name="link", description="Link your Discord account to your OSRS username.")
@@ -833,18 +900,19 @@ async def link(ctx: discord.ApplicationContext, username: discord.Option(str, "Y
         async with session.get(url) as response:
             if response.status != 200:
                 return await ctx.respond(f"Could not find '{username}' on the OSRS HiScores.", ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO user_links (discord_id, osrs_name) VALUES (?, ?)", (ctx.author.id, username))
-    conn.commit(); conn.close()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("INSERT INTO user_links (discord_id, osrs_name) VALUES (%s, %s) ON CONFLICT (discord_id) DO UPDATE SET osrs_name = EXCLUDED.osrs_name", (ctx.author.id, username))
+    conn.commit(); cursor.close(); conn.close()
     await ctx.respond(f"Success! Your Discord account has been linked to the OSRS name: **{username}**.", ephemeral=True)
 
 points = bot.create_group("points", "Commands related to Clan Points.")
 @points.command(name="view", description="Check your current Clan Point balance.")
 async def view_points(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    point_data = cursor.execute("SELECT points FROM clan_points WHERE discord_id = ?", (ctx.author.id,)).fetchone()
-    conn.close()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT points FROM clan_points WHERE discord_id = %s", (ctx.author.id,))
+    point_data = cursor.fetchone()
+    cursor.close(); conn.close()
     
     current_points = point_data[0] if point_data else 0
     await ctx.respond(f"You currently have **{current_points}** Clan Points.", ephemeral=True)
@@ -852,9 +920,10 @@ async def view_points(ctx: discord.ApplicationContext):
 @points.command(name="leaderboard", description="View the Clan Points leaderboard.")
 async def leaderboard(ctx: discord.ApplicationContext):
     await ctx.defer()
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    leaders = cursor.execute("SELECT discord_id, points FROM clan_points ORDER BY points DESC LIMIT 10").fetchall()
-    conn.close()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT discord_id, points FROM clan_points ORDER BY points DESC LIMIT 10")
+    leaders = cursor.fetchall()
+    cursor.close(); conn.close()
 
     embed = discord.Embed(title="🏆 Clan Points Leaderboard 🏆", color=discord.Color.gold())
     if not leaders:
@@ -906,6 +975,7 @@ async def help(ctx: discord.ApplicationContext):
     `/bingo submissions` - View and manage pending bingo submissions.
     `/admin announce` - Send a global announcement as the bot.
     `/admin manage_points` - Add or remove Clan Points from a member.
+    `/admin award_sotw_winners` - Manually award points for a past SOTW.
     """
     
     embed.add_field(name="✅ Member Commands", value=textwrap.dedent(member_commands), inline=False)
