@@ -311,7 +311,7 @@ async def generate_announcement_json(event_type: str, details: dict = None) -> d
         skill = details.get('skill', 'a new skill')
         duration = details.get('duration', 'a set period')
         specific_prompt = f"Generate an embed announcing the start of a Skill of the Week competition. The skill is **{skill}** and it will last for **{duration}**. Make it sound epic and encourage everyone to participate."
-        fallback = {"title": f⚔️ SOTW Started: {skill}! ⚔️", "description": f"The clan has spoken! The **{skill}** competition begins *now* and will last for {duration}. May the most dedicated warrior win!", "color": 5763719}
+        fallback = {"title": "f⚔️ SOTW Started: {skill}! ⚔️", "description": f"The clan has spoken! The **{skill}** competition begins *now* and will last for {duration}. May the most dedicated warrior win!", "color": 5763719}
     
     elif event_type == "raffle_start":
         prize = details.get('prize', 'a grand prize')
