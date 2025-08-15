@@ -292,56 +292,80 @@ async def generate_recap_text(gains_data: list) -> str:
 async def generate_announcement_json(event_type: str, details: dict = None) -> dict:
     """
     Generates a JSON object for a Discord embed with more personality and detail.
+    This version gives the AI more creative freedom over the description.
     """
     details = details or {}
     
+    # --- Persona and Instructions for the AI ---
     persona_prompt = """
-    You are TaskmasterGPT, a clever and slightly cheeky Clan Discord events bot.
-    Your task is to generate a JSON object for a Discord embed.
-    The JSON must have the following keys: "title" (string), "description" (string), and "color" (integer).
-    Maintain a confident but casual and epic tone. Use Discord markdown like **bold** or *italics*. 
-    Be descriptive and engaging. Do not use emojis.
+    You are TaskmasterGPT, the official announcer for an Old School RuneScape clan. 
+    Your tone is epic, engaging, and a little bit cheeky. You are the clan's ultimate hype man.
+    Your task is to generate a JSON object with a single key: "description".
+    The value of "description" should be a full, narrative-style announcement message.
+    You MUST use Discord markdown like **bold** and *italics* to add emphasis. Do not use emojis.
+    Incorporate all the details provided in the request to make the announcement informative and exciting.
     """
     
-    if event_type == "sotw_poll":
-        specific_prompt = "Generate an embed for a new Skill of the Week poll. The description should encourage members to vote on which skill they want to compete in."
-        fallback = {"title": "📊 Skill of the Week Poll", "description": "The time has come to choose our next battleground! Cast your vote below.", "color": 15105600}
+    # --- Default titles and colors defined in the bot, not by the AI ---
+    title = "🎉 A New Event Has Started!"
+    color = 3447003
     
+    if event_type == "sotw_poll":
+        title = "📊 Skill of the Week Poll"
+        color = 15105600
+        specific_prompt = "Write an announcement kicking off a new poll to decide the next Skill of the Week. Encourage everyone to cast their vote to determine the clan's next great challenge."
+        fallback_desc = "The time has come to choose our next battleground! A poll has been started to determine the next Skill of the Week. Head to the SOTW channel and cast your vote!"
+
     elif event_type == "sotw_start":
         skill = details.get('skill', 'a new skill')
         duration = details.get('duration', 'a set period')
-        specific_prompt = f"Generate an embed announcing the start of a Skill of the Week competition. The skill is **{skill}** and it will last for **{duration}**. Make it sound epic and encourage everyone to participate."
-        fallback = {"title": "f⚔️ SOTW Started: {skill}! ⚔️", "description": f"The clan has spoken! The **{skill}** competition begins *now* and will last for {duration}. May the most dedicated warrior win!", "color": 5763719}
-    
+        title = f"⚔️ SOTW Started: {skill}! ⚔️"
+        color = 5763719
+        specific_prompt = f"Write an epic announcement declaring the start of a new Skill of the Week competition. The chosen skill is **{skill}**, and the competition will last for **{duration}**. Frame it as a grand challenge for glory and honor."
+        fallback_desc = f"The clan has spoken! The great grind for **{skill}** begins *now*. You have **{duration}** to prove your dedication. May the most relentless skiller achieve victory!"
+
     elif event_type == "raffle_start":
         prize = details.get('prize', 'a grand prize')
         duration = details.get('duration', 'a set period')
-        specific_prompt = f"Generate an embed for a new clan raffle. The grand prize is a **{prize}**. The raffle will be open for **{duration}**. Encourage members to enter."
-        fallback = {"title": "🎟️ A New Raffle has Begun!", "description": f"Fortune favors the bold! A new raffle has begun for a chance to win a **{prize}**! You have **{duration}** to enter.", "color": 15844367}
-    
+        title = "🎟️ A New Raffle has Begun!"
+        color = 15844367
+        specific_prompt = f"Write a compelling announcement for a new clan raffle. The grand prize is a legendary **{prize}**. The raffle will be open for **{duration}**. Encourage members to test their luck for a chance to win big."
+        fallback_desc = f"Fortune favors the bold! A new raffle is underway, and a legendary **{prize}** is up for grabs. You have **{duration}** to enter and claim your shot at glory. Good luck!"
+
     elif event_type == "bingo_start":
         duration = details.get('duration', 'a set period')
-        specific_prompt = f"Generate an embed announcing the start of a new clan bingo event. It will last for **{duration}**. Describe it as a fun challenge for all members."
-        fallback = {"title": "🧩 A New Clan Bingo Has Started! 🧩", "description": f"The Taskmaster has devised a new trial! A fresh board of challenges awaits for the next **{duration}**. Let the games begin!", "color": 11027200}
-    
+        title = "🧩 A New Clan Bingo Has Started! 🧩"
+        color = 11027200
+        specific_prompt = f"Write a fun and engaging announcement for the start of a new clan bingo event. It will last for **{duration}**. Describe it as a board full of diverse challenges and a great way for members to earn points and show their skills."
+        fallback_desc = f"The Taskmaster has devised a new trial! A fresh board of challenges awaits all clan members for the next **{duration}**. Complete tasks, fill your tiles, and earn points. Let the games begin!"
+
     elif event_type == "points_award":
+        # This one remains structured as it's a direct notification
         amount = details.get('amount', 'a number of')
         reason = details.get('reason', 'your excellent performance')
-        specific_prompt = f"Generate an embed for a private message notifying a member they have been awarded **{amount} Clan Points** for *{reason}*. Explain that points can be used for rewards like raffle tickets."
-        fallback = {"title": "🏆 Points Awarded!", "description": f"You have been awarded **{amount} Clan Points** for *{reason}*! Clan Points are a measure of your dedication and can be used for rewards. Well done.", "color": 5763719}
-    
+        return {
+            "title": "🏆 Points Awarded!",
+            "description": f"You have been awarded **{amount} Clan Points** for *{reason}*! Clan Points are a measure of your dedication and can be used for rewards. Well done.",
+            "color": 5763719
+        }
     else:
-        return {"title": "🎉 New Event!", "description": "A new event has started!", "color": 3447003}
+        # Generic fallback
+        return {"title": title, "description": "A new event has started!", "color": color}
 
     full_prompt = f"{persona_prompt}\n\nRequest: {specific_prompt}\n\nJSON Output:"
     
     try:
         response = await ai_model.generate_content_async(full_prompt)
         clean_json_string = response.text.strip().lstrip("```json").rstrip("```")
-        return json.loads(clean_json_string)
+        # We only expect the 'description' from the AI now
+        ai_data = json.loads(clean_json_string)
+        description = ai_data.get("description", fallback_desc)
     except Exception as e:
         print(f"An error occurred during JSON generation: {e}")
-        return fallback
+        description = fallback_desc
+
+    return {"title": title, "description": description, "color": color}
+
 
 async def draw_raffle_winner(channel: discord.TextChannel, raffle_id: int):
     conn = get_db_connection()
@@ -1345,3 +1369,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
