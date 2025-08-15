@@ -875,8 +875,8 @@ async def edit_tickets(
 
 @raffle.command(name="view_tickets", description="View the current ticket count for all participants.")
 async def view_tickets(ctx: discord.ApplicationContext):
-    await ctx.defer()
     try:
+        await ctx.defer()
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("SELECT id, prize FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
         raffle_data = cursor.fetchone()
@@ -904,7 +904,10 @@ async def view_tickets(ctx: discord.ApplicationContext):
         await ctx.respond(embed=embed)
     except Exception as e:
         print(f"ERROR in /raffle view_tickets: {e}")
-        await ctx.respond("An error occurred while trying to fetch the ticket list. Please try again later.", ephemeral=True)
+        try:
+            await ctx.respond("An error occurred while trying to fetch the ticket list. Please try again later.", ephemeral=True)
+        except discord.NotFound:
+            pass # Interaction already gone
 
 
 @raffle.command(name="draw_now", description="ADMIN: Immediately ends the raffle and draws a winner.")
