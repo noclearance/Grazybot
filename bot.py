@@ -876,31 +876,36 @@ async def edit_tickets(
 @raffle.command(name="view_tickets", description="View the current ticket count for all participants.")
 async def view_tickets(ctx: discord.ApplicationContext):
     await ctx.defer()
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT id, prize FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-    raffle_data = cursor.fetchone()
-    if not raffle_data:
-        cursor.close(); conn.close(); return await ctx.respond("There is no active raffle.")
-    
-    raffle_id, raffle_prize = raffle_data
-    cursor.execute("SELECT user_id, COUNT(user_id) FROM raffle_entries WHERE raffle_id = %s GROUP BY user_id ORDER BY COUNT(user_id) DESC", (raffle_id,))
-    entries = cursor.fetchall()
-    cursor.close(); conn.close()
+    try:
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("SELECT id, prize FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
+        raffle_data = cursor.fetchone()
+        if not raffle_data:
+            cursor.close(); conn.close(); return await ctx.respond("There is no active raffle.")
+        
+        raffle_id, raffle_prize = raffle_data
+        cursor.execute("SELECT user_id, COUNT(user_id) FROM raffle_entries WHERE raffle_id = %s GROUP BY user_id ORDER BY COUNT(user_id) DESC", (raffle_id,))
+        entries = cursor.fetchall()
+        cursor.close(); conn.close()
 
-    embed = discord.Embed(title=f"🎟️ Raffle Tickets for '{raffle_prize}'", color=discord.Color.gold())
-    if not entries:
-        embed.description = "No tickets have been given out yet."
-    else:
-        description = ""
-        for user_id, count in entries[:20]: # Show top 20
-            try:
-                member = await ctx.guild.fetch_member(user_id)
-                description += f"**{member.display_name}**: {count} ticket(s)\n"
-            except discord.NotFound:
-                continue # Skip if member left the server
-        embed.description = description
-    
-    await ctx.respond(embed=embed)
+        embed = discord.Embed(title=f"🎟️ Raffle Tickets for '{raffle_prize}'", color=discord.Color.gold())
+        if not entries:
+            embed.description = "No tickets have been given out yet."
+        else:
+            description = ""
+            for user_id, count in entries[:20]: # Show top 20
+                try:
+                    member = await ctx.guild.fetch_member(user_id)
+                    description += f"**{member.display_name}**: {count} ticket(s)\n"
+                except discord.NotFound:
+                    continue # Skip if member left the server
+            embed.description = description
+        
+        await ctx.respond(embed=embed)
+    except Exception as e:
+        print(f"ERROR in /raffle view_tickets: {e}")
+        await ctx.respond("An error occurred while trying to fetch the ticket list. Please try again later.", ephemeral=True)
+
 
 @raffle.command(name="draw_now", description="ADMIN: Immediately ends the raffle and draws a winner.")
 @discord.default_permissions(manage_events=True)
@@ -1369,4 +1374,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
