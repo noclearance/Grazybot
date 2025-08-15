@@ -892,13 +892,10 @@ async def view_tickets(ctx: discord.ApplicationContext):
         if not entries:
             embed.description = "No tickets have been given out yet."
         else:
+            # FIX: Use user ID mentions instead of fetching members to avoid timeouts.
             description = ""
             for user_id, count in entries[:20]: # Show top 20
-                try:
-                    member = await ctx.guild.fetch_member(user_id)
-                    description += f"**{member.display_name}**: {count} ticket(s)\n"
-                except discord.NotFound:
-                    continue # Skip if member left the server
+                description += f"<@{user_id}>: {count} ticket(s)\n"
             embed.description = description
         
         await ctx.respond(embed=embed)
@@ -1297,14 +1294,11 @@ async def leaderboard(ctx: discord.ApplicationContext):
     if not leaders:
         embed.description = "No one has earned any points yet."
     else:
+        # FIX: Use user ID mentions instead of fetching members to avoid timeouts.
         leaderboard_text = ""
         for i, (user_id, points) in enumerate(leaders):
             rank_emoji = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
-            try:
-                member = await ctx.guild.fetch_member(user_id)
-                leaderboard_text += f"{rank_emoji} **{member.display_name}**: {points:,} points\n"
-            except discord.NotFound:
-                continue
+            leaderboard_text += f"{rank_emoji} <@{user_id}>: {points:,} points\n"
         embed.description = leaderboard_text
     
     await ctx.respond(embed=embed)
@@ -1377,3 +1371,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
