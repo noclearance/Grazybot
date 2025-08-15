@@ -677,7 +677,7 @@ async def start_web_server():
     app.router.add_get('/', handle_http)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', 10000)) # Use port 10000 for Render
     site = web.TCPSite(runner, '0.0.0.0', port)
     try:
         await site.start()
