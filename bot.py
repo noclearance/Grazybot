@@ -34,6 +34,7 @@ BINGO_FONT_FILE = "arial.ttf"
 SOTW_CHANNEL_ID = int(os.getenv('SOTW_CHANNEL_ID'))
 BINGO_CHANNEL_ID = int(os.getenv('BINGO_CHANNEL_ID'))
 RAFFLE_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID'))
+GIVEAWAY_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID')) # Using raffle channel for giveaways
 RECAP_CHANNEL_ID = int(os.getenv('RECAP_CHANNEL_ID'))
 ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID'))
 
@@ -61,8 +62,6 @@ def setup_database():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # FIX: Changed SERIAL to INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY
-    # This is the modern SQL standard and helps prevent errors like the one in the log.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS active_competitions (
         id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, 
@@ -107,6 +106,26 @@ def setup_database():
     cursor.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
     
+    # New tables for the pick-a-number giveaway
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS giveaways (
+        id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+        prize TEXT NOT NULL,
+        ends_at TIMESTAMPTZ NOT NULL,
+        max_number INTEGER NOT NULL,
+        winner_id BIGINT,
+        winning_number INTEGER
+    )""")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS giveaway_entries (
+        entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+        giveaway_id INTEGER REFERENCES giveaways(id) ON DELETE CASCADE,
+        user_id BIGINT NOT NULL,
+        chosen_number INTEGER NOT NULL,
+        UNIQUE (giveaway_id, chosen_number),
+        UNIQUE (giveaway_id, user_id)
+    )""")
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -398,6 +417,43 @@ async def draw_raffle_winner(channel: discord.TextChannel, raffle_id: int):
     conn.close()
     return f"Winner drawn for the '{prize}' raffle."
 
+async def draw_giveaway_winner(channel: discord.TextChannel, giveaway_id: int):
+    """Handles the logic for drawing a giveaway winner."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cursor.execute("SELECT * FROM giveaways WHERE id = %s", (giveaway_id,))
+    giveaway_data = cursor.fetchone()
+    if not giveaway_data:
+        cursor.close(); conn.close()
+        return
+    
+    prize = giveaway_data['prize']
+    max_number = giveaway_data['max_number']
+    winning_number = random.randint(1, max_number)
+    
+    cursor.execute("SELECT user_id FROM giveaway_entries WHERE giveaway_id = %s AND chosen_number = %s", (giveaway_id, winning_number))
+    winner_data = cursor.fetchone()
+    
+    embed = discord.Embed(title=f"🎉 Giveaway Results for {prize}! 🎉", color=discord.Color.dark_gold())
+    embed.add_field(name="The Winning Number Was...", value=f"**{winning_number}**", inline=False)
+
+    if winner_data:
+        winner_id = winner_data['user_id']
+        winner_user = await bot.fetch_user(winner_id)
+        embed.description = f"Congratulations to {winner_user.mention}, who picked the lucky number!"
+        embed.set_thumbnail(url=winner_user.display_avatar.url)
+        await channel.send(content=f"Congratulations {winner_user.mention}!", embed=embed)
+        cursor.execute("UPDATE giveaways SET winner_id = %s, winning_number = %s WHERE id = %s", (winner_id, winning_number, giveaway_id))
+    else:
+        embed.description = "Unfortunately, nobody picked the winning number this time. The prize remains in the clan vault!"
+        await channel.send(embed=embed)
+        cursor.execute("UPDATE giveaways SET winning_number = %s WHERE id = %s", (winning_number, giveaway_id))
+        
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
 def generate_bingo_image(tasks: list, completed_tasks: list = []):
     """Generates the bingo board image with better fonts and text wrapping."""
     try:
@@ -668,6 +724,20 @@ async def event_manager():
     except Exception as e:
         print(f"ERROR in event_manager (Raffles): {e}")
 
+    # --- Giveaway Drawing (Isolated) ---
+    try:
+        giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
+        if giveaway_channel:
+            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cursor.execute("SELECT * FROM giveaways WHERE winner_id IS NULL AND ends_at <= NOW()")
+            ended_giveaways = cursor.fetchall()
+            for giveaway_data in ended_giveaways:
+                await draw_giveaway_winner(giveaway_channel, giveaway_data['id'])
+            conn.commit(); cursor.close(); conn.close()
+    except Exception as e:
+        print(f"ERROR in event_manager (Giveaways): {e}")
+
+
 # --- Web Server for Hosting ---
 async def handle_http(request):
     return web.Response(text="Bot is alive!")
@@ -892,11 +962,13 @@ async def view_tickets(ctx: discord.ApplicationContext):
         if not entries:
             embed.description = "No tickets have been given out yet."
         else:
-            # FIX: Use user ID mentions instead of fetching members to avoid timeouts.
-            description = ""
+            description_lines = []
             for user_id, count in entries[:20]: # Show top 20
-                description += f"<@{user_id}>: {count} ticket(s)\n"
-            embed.description = description
+                # FIX: Use the bot's cache to get member names. This is fast and reliable.
+                member = ctx.guild.get_member(user_id)
+                member_name = member.display_name if member else f"User ID: {user_id}"
+                description_lines.append(f"**{member_name}**: {count} ticket(s)")
+            embed.description = "\n".join(description_lines)
         
         await ctx.respond(embed=embed)
     except Exception as e:
@@ -944,6 +1016,86 @@ async def cancel_raffle(ctx: discord.ApplicationContext):
     channel = bot.get_channel(RAFFLE_CHANNEL_ID)
     if channel: await channel.send(f"The raffle for **{prize}** has been cancelled by an admin.")
     await ctx.respond("Raffle successfully cancelled.")
+
+giveaway = bot.create_group("giveaway", "Commands for pick-a-number giveaways.")
+@giveaway.command(name="start", description="ADMIN: Start a new pick-a-number giveaway.")
+@discord.default_permissions(manage_events=True)
+async def start_giveaway(
+    ctx: discord.ApplicationContext, 
+    prize: discord.Option(str, "What is the prize?"), 
+    max_number: discord.Option(int, "The highest number a user can pick.", min_value=10),
+    duration_days: discord.Option(float, "How many days the giveaway will last.")
+):
+    await ctx.defer(ephemeral=True)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM giveaways WHERE ends_at > NOW()")
+    active_giveaway = cursor.fetchone()
+    if active_giveaway:
+        cursor.close(); conn.close()
+        return await ctx.respond("There is already an active giveaway. Please wait for it to end before starting a new one.", ephemeral=True)
+
+    ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
+    cursor.execute("INSERT INTO giveaways (prize, ends_at, max_number) VALUES (%s, %s, %s)", (prize, ends_at, max_number))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    # Silent confirmation for testing
+    await ctx.respond(f"✅ **Giveaway started silently for testing.**\n**Prize:** {prize}\n**Max Number:** {max_number}\nThis event will now run in the background and a winner will be drawn automatically.", ephemeral=True)
+    
+    # --- To re-enable public announcements, uncomment the block below ---
+    # giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
+    # if giveaway_channel:
+    #     embed = discord.Embed(
+    #         title="🎉 A New Giveaway Has Started! 🎉",
+    #         description=f"We're giving away a **{prize}**!",
+    #         color=discord.Color.dark_magenta()
+    #     )
+    #     embed.add_field(name="How to Enter", value=f"Pick a number between 1 and {max_number} using `/giveaway enter`.", inline=False)
+    #     embed.add_field(name="Giveaway Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
+    #     embed.set_footer(text="First come, first served for each number. Good luck!")
+    #     await giveaway_channel.send(embed=embed)
+    #     await ctx.respond("Giveaway created successfully!", ephemeral=True)
+    # else:
+    #     await ctx.respond("Error: Giveaway channel not configured correctly.", ephemeral=True)
+
+
+@giveaway.command(name="enter", description="Enter the current giveaway by picking a number.")
+async def enter_giveaway(ctx: discord.ApplicationContext, number: discord.Option(int, "Your lucky number!")):
+    await ctx.defer(ephemeral=True)
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cursor.execute("SELECT * FROM giveaways WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
+    giveaway_data = cursor.fetchone()
+
+    if not giveaway_data:
+        cursor.close(); conn.close()
+        return await ctx.respond("There is no active giveaway to enter right now.", ephemeral=True)
+
+    if not (1 <= number <= giveaway_data['max_number']):
+        cursor.close(); conn.close()
+        return await ctx.respond(f"That's not a valid number! Please pick a number between 1 and {giveaway_data['max_number']}.", ephemeral=True)
+
+    try:
+        cursor.execute(
+            "INSERT INTO giveaway_entries (giveaway_id, user_id, chosen_number) VALUES (%s, %s, %s)",
+            (giveaway_data['id'], ctx.author.id, number)
+        )
+        conn.commit()
+        await ctx.respond(f"Your entry for number **{number}** has been locked in. Good luck!", ephemeral=True)
+    except psycopg2.IntegrityError as e:
+        conn.rollback()
+        if 'giveaway_entries_giveaway_id_chosen_number_key' in str(e):
+            await ctx.respond(f"Sorry, the number **{number}** has already been taken! Please choose another.", ephemeral=True)
+        elif 'giveaway_entries_giveaway_id_user_id_key' in str(e):
+            await ctx.respond("You have already entered this giveaway! You can only pick one number.", ephemeral=True)
+        else:
+            await ctx.respond("An unexpected error occurred. Please try again.", ephemeral=True)
+    finally:
+        cursor.close()
+        conn.close()
+
 
 events = bot.create_group("events", "View all active clan events.")
 @events.command(name="view", description="Shows all currently active competitions, raffles, and bingo events.")
@@ -1294,12 +1446,14 @@ async def leaderboard(ctx: discord.ApplicationContext):
     if not leaders:
         embed.description = "No one has earned any points yet."
     else:
-        # FIX: Use user ID mentions instead of fetching members to avoid timeouts.
-        leaderboard_text = ""
+        description_lines = []
         for i, (user_id, points) in enumerate(leaders):
             rank_emoji = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
-            leaderboard_text += f"{rank_emoji} <@{user_id}>: {points:,} points\n"
-        embed.description = leaderboard_text
+            # FIX: Use the bot's cache to get member names. This is fast and reliable.
+            member = ctx.guild.get_member(user_id)
+            member_name = member.display_name if member else f"User ID: {user_id}"
+            description_lines.append(f"{rank_emoji} **{member_name}**: {points:,} points")
+        embed.description = "\n".join(description_lines)
     
     await ctx.respond(embed=embed)
 
@@ -1371,4 +1525,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
