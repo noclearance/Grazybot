@@ -1592,6 +1592,66 @@ async def main():
     web_task = asyncio.create_task(start_web_server())
     bot_task = asyncio.create_task(run_bot())
     await asyncio.gather(web_task, bot_task)
+# --- ADD THIS NEW COMMAND TO YOUR BOT.PY FILE ---
+
+@raffle.command(name="draw_now", description="Manually draws a winner for a stuck raffle in this channel.")
+@commands.has_permissions(manage_guild=True) # Only admins can run this
+async def draw_now(ctx: discord.ApplicationContext):
+    """
+    Manually triggers the winner draw for the raffle in the current channel.
+    """
+    channel_id = str(ctx.channel.id)
+    raffles = load_raffles()
+
+    if channel_id not in raffles:
+        await ctx.respond("There is no active raffle in this channel to draw a winner from.", ephemeral=True)
+        return
+
+    raffle_data = raffles[channel_id]
+    participants = raffle_data.get("participants", [])
+
+    if not participants:
+        await ctx.respond("The raffle has ended, but there were no participants.")
+        # Clean up the stuck raffle
+        del raffles[channel_id]
+        save_raffles(raffles)
+        return
+
+    await ctx.respond("Force-drawing a winner for the stuck raffle... Good luck!")
+
+    # --- This is the same logic from your end_raffle function ---
+    winner_name = random.choice(participants)
+    
+    # Try to find the winner as a member in the server
+    winner_member = discord.utils.get(ctx.guild.members, name=winner_name)
+
+    winner_mention = winner_name
+    if winner_member:
+        winner_mention = winner_member.mention
+
+    # Count winner's tickets for the announcement
+    winner_ticket_count = participants.count(winner_name)
+
+    embed = discord.Embed(
+        title="🎉 RAFFLE WINNER (MANUAL DRAW) 🎉",
+        description=f"Congratulations to **{winner_mention}** for winning the **{raffle_data['prize']}**!",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="Winning Entry", value=f"They had {winner_ticket_count} ticket(s) in the draw!")
+    embed.set_footer(text="The stuck raffle has now been concluded.")
+    
+    await ctx.send(embed=embed)
+
+    # Send a DM to the winner if we found them
+    if winner_member:
+        try:
+            await winner_member.send(f"Congratulations! You won the **{raffle_data['prize']}** in the raffle!")
+        except discord.Forbidden:
+            await ctx.send(f"Could not send a DM to {winner_mention}, but they are still the winner!")
+
+    # Clean up the completed raffle from the JSON file
+    del raffles[channel_id]
+    save_raffles(raffles)
 
 if __name__ == "__main__":
     asyncio.run(main())
