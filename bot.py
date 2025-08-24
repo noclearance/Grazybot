@@ -744,12 +744,28 @@ async def start_web_server():
 @bot.event
 async def on_ready():
     print(f"{bot.user} is online and ready!")
+    
+    # --- THIS IS THE NEW TEMPORARY CODE ---
+    # It will run once to fix the database.
+    try:
+        print("Attempting to reset giveaway tables...")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DROP TABLE IF EXISTS giveaways, giveaway_entries;")
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("Giveaway tables successfully dropped. They will be recreated.")
+    except Exception as e:
+        print(f"Could not drop tables, maybe they don't exist yet. Error: {e}")
+    # --- END OF TEMPORARY CODE ---
+
     setup_database()
     event_manager.start()
     daily_event_reminder.start()
     bot.add_view(SubmissionView())
 
-    # --- NEW: Re-register Giveaway Views on Startup ---
+    # --- Re-register Giveaway Views on Startup ---
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     # Get all giveaways that should still be running
