@@ -28,7 +28,6 @@ httplib2==0.22.0
 httpx==0.28.1
 idna==3.10
 jiter==0.10.0
-msgspec==0.18.6
 multidict==6.6.3
 openai==1.98.0
 pillow==11.3.0
