@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 # Import helper functions from our utils file
-from .utils import get_db_connection, generate_announcement_json, send_global_announcement, draw_raffle_winner
+from .utils import get_db_connection, generate_announcement_json, send_to_announcement_channels, draw_raffle_winner
 
 class Raffle(commands.Cog):
     def __init__(self, bot: discord.Bot):
@@ -39,7 +39,12 @@ class Raffle(commands.Cog):
         raffle_channel = self.bot.get_channel(self.raffle_channel_id)
         if raffle_channel:
             raffle_message = await raffle_channel.send(embed=embed)
-            await send_global_announcement(self.bot, "raffle_start", {"prize": prize}, raffle_message.jump_url)
+            
+            # Use the new helper function to announce in multiple channels
+            announce_embed = embed.copy()
+            announce_embed.add_field(name="Details", value=f"[Click here to view the raffle!]({raffle_message.jump_url})")
+            await send_to_announcement_channels(self.bot, announce_embed)
+
             await ctx.respond("Raffle created successfully!", ephemeral=True)
         else:
             await ctx.respond("Error: Raffle Channel ID not configured correctly.", ephemeral=True)
