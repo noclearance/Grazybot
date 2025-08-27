@@ -1,20 +1,13 @@
 # bot.py
 
-# Patch to bypass missing audioop (for bots not using voice)
+import sys
+
+# Bypass missing audioop on some platforms
 try:
     import audioop
-except ModuleNotFoundError:
+except ImportError:
     import types
-    audioop = types.SimpleNamespace(
-        # Add dummy functions PyCord might call
-        max=None,
-        min=None,
-        avg=None,
-        lin2lin=None,
-        lin2adpcm=None,
-        adpcm2lin=None,
-        # etc. can add more if PyCord complains
-    )
+    sys.modules['audioop'] = types.ModuleType('audioop')
 
 import discord
 from discord.ext import commands
