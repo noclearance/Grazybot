@@ -1,78 +1,113 @@
 # bot.py
 
-import sys
-
-# Bypass missing audioop on some platforms
-try:
-    import audioop
-except ImportError:
-    import types
-    sys.modules['audioop'] = types.ModuleType('audioop')
-
 import discord
 from discord.ext import commands
 import os
 from dotenv import load_dotenv
+
+
 import asyncio
+
+
 import psycopg2
-import aiohttp
-from aiohttp import web
+
+
+
+
+
+
+
+
 
 # Load environment variables from .env file
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID"))
+
+
+
 DATABASE_URL = os.getenv('DATABASE_URL')
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Define bot intents
+
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True
+intents.message_content = True # Needed for keyword listening
+
 
 # The bot instance is now created from commands.Bot to better support cogs
 bot = commands.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 
+
 def setup_database():
-    """This function from your original file ensures all tables are created on startup.""" [cite: 2, 24, 102]
+    """
+    This function from your original file ensures all tables are created on startup.
+    We run this before loading cogs to make sure they have tables to work with.
+    """
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
-    # Create all tables from your original script [cite: 2, 3, 4, 5, 6]
+    # Create all tables from your original script
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS active_competitions (
         id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ,
-        midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE
-    )""")
-    cursor.execute("CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS raffle_entries (entry_id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, source TEXT DEFAULT 'self')")
-    cursor.execute("CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY, ends_at TIMESTAMPTZ, board_json TEXT, message_id BIGINT)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS bingo_submissions (id SERIAL PRIMARY KEY, user_id BIGINT, task_name TEXT, proof_url TEXT, status TEXT DEFAULT 'pending')")
+@@ -69,1532 +40,61 @@ def setup_database():
     cursor.execute("CREATE TABLE IF NOT EXISTS bingo_completed_tiles (task_name TEXT PRIMARY KEY)")
     cursor.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
+
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS rewards (
         id SERIAL PRIMARY KEY, reward_name TEXT NOT NULL UNIQUE, point_cost INTEGER NOT NULL,
         description TEXT, is_active BOOLEAN DEFAULT TRUE
+
+
+
     )""")
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS role_rewards (
         reward_id INTEGER PRIMARY KEY, role_id BIGINT NOT NULL,
+
         FOREIGN KEY (reward_id) REFERENCES rewards(id) ON DELETE CASCADE
     )""")
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS redeem_transactions (
         transaction_id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, reward_id INTEGER NOT NULL,
         reward_name TEXT NOT NULL, point_cost INTEGER NOT NULL, redeemed_at TIMESTAMPTZ DEFAULT NOW()
+
+
+
+
     )""")
+
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS giveaways (
         message_id BIGINT PRIMARY KEY, channel_id BIGINT NOT NULL, prize TEXT NOT NULL,
         ends_at TIMESTAMPTZ NOT NULL, winner_count INTEGER NOT NULL, is_active BOOLEAN DEFAULT TRUE,
         role_id BIGINT
+
+
+
     )""")
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS giveaway_entries (
         entry_id SERIAL PRIMARY KEY, message_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
+
+
         UNIQUE (message_id, user_id)
     )""")
     conn.commit()
@@ -80,46 +115,642 @@ def setup_database():
     conn.close()
     print("Database setup checked and tables verified.")
 
-# --- Web Server for Hosting (from your original bot.py) --- 
-async def handle_http(request):
-    return web.Response(text="Bot is alive!") [cite: 92]
-
-async def start_web_server():
-    app = web.Application() [cite: 92]
-    app.router.add_get('/', handle_http) [cite: 92]
-    runner = web.AppRunner(app) [cite: 92]
-    await runner.setup() [cite: 92]
-    port = int(os.environ.get('PORT', 8080)) [cite: 92]
-    site = web.TCPSite(runner, '0.0.0.0', port) [cite: 92]
-    try:
-        await site.start() [cite: 92]
-        print(f"Web server started on port {port}")
-    except Exception as e:
-        print(f"Error starting web server: {e}")
-
 async def main():
-    # Ensure database is set up before loading cogs
-    setup_database()
+    # Ensure database is set up before loading cogs that might need it
 
-    # Dynamically load all cogs
-    print("Loading cogs...")
-    for filename in os.listdir("./cogs"):
-        if filename.endswith(".py") and not filename.startswith('__'):
-            try:
-                bot.load_extension(f"cogs.{filename[:-3]}")
-                print(f"✅ Loaded cog: {filename}")
-            except Exception as e:
-                print(f"❌ Failed to load cog {filename}: {e}")
-    
-    # Start the bot and the web server concurrently
-    print("Starting bot and web server...")
-    await asyncio.gather(
-        bot.start(TOKEN),
-        start_web_server()
-    )
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot is shutting down.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

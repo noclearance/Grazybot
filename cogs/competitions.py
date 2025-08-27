@@ -122,4 +122,4 @@ class Competitions(commands.Cog):
 
 # This function is required for the cog to be loaded by the bot
 def setup(bot):
-    bot.add_cog(Competitions(bot))
+    bot.add_cog(Competitions(bot)

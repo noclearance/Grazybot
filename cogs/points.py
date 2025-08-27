@@ -1,4 +1,4 @@
-# cogs/points.py
+ cogs/points.py
 import discord
 from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
