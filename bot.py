@@ -5,6 +5,8 @@ import os
 from dotenv import load_dotenv
 import asyncio
 import psycopg2
+import aiohttp
+from aiohttp import web
 
 # Load environment variables from .env file
 load_dotenv()
@@ -15,19 +17,16 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 # Define bot intents
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True # Needed for keyword listening
+intents.message_content = True
 
 # The bot instance is now created from commands.Bot to better support cogs
 bot = commands.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 
 def setup_database():
-    """
-    This function from your original file ensures all tables are created on startup.
-    We run this before loading cogs to make sure they have tables to work with.
-    """
+    """This function from your original file ensures all tables are created on startup.""" [cite: 2, 24, 102]
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
-    # Create all tables from your original script
+    # Create all tables from your original script [cite: 2, 3, 4, 5, 6]
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS active_competitions (
         id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ,
@@ -71,11 +70,28 @@ def setup_database():
     conn.close()
     print("Database setup checked and tables verified.")
 
+# --- Web Server for Hosting (from your original bot.py) --- 
+async def handle_http(request):
+    return web.Response(text="Bot is alive!") [cite: 92]
+
+async def start_web_server():
+    app = web.Application() [cite: 92]
+    app.router.add_get('/', handle_http) [cite: 92]
+    runner = web.AppRunner(app) [cite: 92]
+    await runner.setup() [cite: 92]
+    port = int(os.environ.get('PORT', 8080)) [cite: 92]
+    site = web.TCPSite(runner, '0.0.0.0', port) [cite: 92]
+    try:
+        await site.start() [cite: 92]
+        print(f"Web server started on port {port}")
+    except Exception as e:
+        print(f"Error starting web server: {e}")
+
 async def main():
-    # Ensure database is set up before loading cogs that might need it
+    # Ensure database is set up before loading cogs
     setup_database()
 
-    # Dynamically load all cogs from the 'cogs' directory
+    # Dynamically load all cogs
     print("Loading cogs...")
     for filename in os.listdir("./cogs"):
         if filename.endswith(".py") and not filename.startswith('__'):
@@ -85,16 +101,15 @@ async def main():
             except Exception as e:
                 print(f"❌ Failed to load cog {filename}: {e}")
     
-    # Start the bot
-    print("Starting bot...")
-    async with bot:
-        await bot.start(TOKEN)
+    # Start the bot and the web server concurrently
+    print("Starting bot and web server...")
+    await asyncio.gather(
+        bot.start(TOKEN),
+        start_web_server()
+    )
 
 if __name__ == "__main__":
     try:
-        # NOTE: Your original file had logic for a web server for Render.
-        # This has been simplified to run the bot directly. You may need to
-        # re-integrate the aiohttp web server logic if Render requires it.
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Bot is shutting down.")
