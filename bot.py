@@ -1,120 +1,26 @@
-# bot.py
-
-import discord
-from discord.ext import commands
-import os
-from dotenv import load_dotenv
-import asyncio
-import psycopg2
-
-# Load environment variables from .env file
-load_dotenv()
-TOKEN = os.getenv("TOKEN")
-DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID"))
-DATABASE_URL = os.getenv('DATABASE_URL')
-
-# Define bot intents
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True # Needed for keyword listening
-
-# The bot instance is now created from commands.Bot to better support cogs
-bot = commands.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
-
-def setup_database():
-    """
-    This function ensures all necessary database tables are created on startup.
-    We run this before loading cogs to make sure they have tables to work with.
-    """
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    
-    # Create all tables from your original script
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS active_competitions (
-        id INTEGER PRIMARY KEY, 
-        title TEXT, 
-        starts_at TIMESTAMPTZ, 
-        ends_at TIMESTAMPTZ
-    )""")
-    # NOTE: The line above was incomplete in your original paste. 
-    # If you had more columns, please add them here.
-
-    cursor.execute("CREATE TABLE IF NOT EXISTS bingo_completed_tiles (task_name TEXT PRIMARY KEY)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS rewards (
-        id SERIAL PRIMARY KEY, 
-        reward_name TEXT NOT NULL UNIQUE, 
-        point_cost INTEGER NOT NULL,
-        description TEXT, 
-        is_active BOOLEAN DEFAULT TRUE
-    )""")
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS role_rewards (
-        reward_id INTEGER PRIMARY KEY, 
-        role_id BIGINT NOT NULL,
-        FOREIGN KEY (reward_id) REFERENCES rewards(id) ON DELETE CASCADE
-    )""")
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS redeem_transactions (
-        transaction_id SERIAL PRIMARY KEY, 
-        user_id BIGINT NOT NULL, 
-        reward_id INTEGER NOT NULL,
-        reward_name TEXT NOT NULL, 
-        point_cost INTEGER NOT NULL, 
-        redeemed_at TIMESTAMPTZ DEFAULT NOW()
-    )""")
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS giveaways (
-        message_id BIGINT PRIMARY KEY, 
-        channel_id BIGINT NOT NULL, 
-        prize TEXT NOT NULL,
-        ends_at TIMESTAMPTZ NOT NULL, 
-        winner_count INTEGER NOT NULL, 
-        is_active BOOLEAN DEFAULT TRUE,
-        role_id BIGINT
-    )""")
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS giveaway_entries (
-        entry_id SERIAL PRIMARY KEY, 
-        message_id BIGINT NOT NULL, 
-        user_id BIGINT NOT NULL,
-        UNIQUE (message_id, user_id)
-    )""")
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-    print("Database setup checked and tables verified.")
-
 async def main():
-    # Ensure database is set up before loading cogs that might need it
+    # Make sure DB is ready
     setup_database()
-    
-    # --------------------------------------------------------------------
-    # >> PASTE THE REST OF YOUR BOT.PY FILE CODE HERE <<
-    #
-    # This includes the part where you loop through your 'cogs' directory
-    # and load each extension, your on_ready() event, and anything else
-    # that was in your original file.
-    #
-    # It should end with the bot.run(TOKEN) call.
-    # --------------------------------------------------------------------
+
+    # Load your cogs dynamically if you have a "cogs" folder
+    for filename in os.listdir("./cogs"):
+        if filename.endswith(".py"):
+            try:
+                await bot.load_extension(f"cogs.{filename[:-3]}")
+                print(f"Loaded cog: {filename}")
+            except Exception as e:
+                print(f"Failed to load cog {filename}: {e}")
+
+    # Start the bot
+    await bot.start(TOKEN)
 
 
-# This part likely needs to be at the end of your file
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Bot is shutting down.")
+
 
 
 
