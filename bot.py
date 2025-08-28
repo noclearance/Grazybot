@@ -1,8 +1,11 @@
+import os
+import asyncio
+
 async def main():
     # Make sure DB is ready
     setup_database()
 
-    # Load your cogs dynamically if you have a "cogs" folder
+    # Load cogs dynamically
     for filename in os.listdir("./cogs"):
         if filename.endswith(".py"):
             try:
@@ -10,6 +13,12 @@ async def main():
                 print(f"Loaded cog: {filename}")
             except Exception as e:
                 print(f"Failed to load cog {filename}: {e}")
+
+    # Get token from environment
+    TOKEN = os.getenv("TOKEN")
+    if not TOKEN:
+        print("❌ No TOKEN found in environment variables.")
+        return
 
     # Start the bot
     await bot.start(TOKEN)
@@ -20,6 +29,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Bot is shutting down.")
+
 
 
 
