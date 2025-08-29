@@ -13,6 +13,10 @@ TOKEN = os.getenv("TOKEN")
 DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID"))
 DATABASE_URL = os.getenv('DATABASE_URL')
 
+# --- NEW DIAGNOSTIC LINE ---
+print(f"DEBUG: DATABASE_URL as seen by bot is: {DATABASE_URL}")
+# --- END OF DIAGNOSTIC LINE ---
+
 # Define bot intents
 intents = discord.Intents.default()
 intents.members = True
