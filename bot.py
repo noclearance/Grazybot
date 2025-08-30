@@ -51,6 +51,18 @@ intents.message_content = True # Needed for the on_message event
 bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 bot.active_polls = {}
 
+# --- Command Groups ---
+admin = discord.SlashCommandGroup("admin", "Admin-only commands")
+
+@admin.command(name="announce", description="Send a message as the bot to a specific channel.")
+async def announce(ctx: discord.ApplicationContext, channel: discord.Option(discord.TextChannel), message: str):
+    await channel.send(message)
+    await ctx.respond(f"Message sent to {channel.mention}", ephemeral=True)
+
+# Register the group
+bot.add_application_command(admin)
+
+
 # --- Database Setup ---
 def get_db_connection():
     """Establishes a connection to the PostgreSQL database."""
@@ -1610,18 +1622,10 @@ async def run_bot():
             print(f"An unexpected error occurred while running the bot: {e}")
             break # Exit on other errors
 
-# --- Main Entry Point ---
 async def main():
-    try:
-        await asyncio.gather(
-            start_web_server(),      # Keeps the Render instance alive
-            bot.start(TOKEN)         # Starts the Discord bot
-        )
-    except Exception as e:
-        print(f"[Fatal Error] Startup failed: {e}")
+    web_task = asyncio.create_task(start_web_server())
+    bot_task = asyncio.create_task(run_bot())
+    await asyncio.gather(web_task, bot_task)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        print(f"[Fatal Error] Uncaught exception in __main__: {e}")
+    asyncio.run(main())
