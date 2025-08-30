@@ -677,6 +677,9 @@ async def event_manager():
     cursor_gw.close()
     conn_gw.close()
 
+async def handle_http(request):
+    return web.Response(text="GrazyBot is alive!")
+
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_http)
