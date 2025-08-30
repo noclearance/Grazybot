@@ -51,6 +51,18 @@ intents.message_content = True # Needed for the on_message event
 bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 bot.active_polls = {}
 
+# --- Command Groups ---
+admin = discord.SlashCommandGroup("admin", "Admin-only commands")
+
+@admin.command(name="announce", description="Send a message as the bot to a specific channel.")
+async def announce(ctx: discord.ApplicationContext, channel: discord.Option(discord.TextChannel), message: str):
+    await channel.send(message)
+    await ctx.respond(f"Message sent to {channel.mention}", ephemeral=True)
+
+# Register the group
+bot.add_application_command(admin)
+
+
 # --- Database Setup ---
 def get_db_connection():
     """Establishes a connection to the PostgreSQL database."""
