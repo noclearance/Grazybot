@@ -1610,10 +1610,18 @@ async def run_bot():
             print(f"An unexpected error occurred while running the bot: {e}")
             break # Exit on other errors
 
+# --- Main Entry Point ---
 async def main():
-    web_task = asyncio.create_task(start_web_server())
-    bot_task = asyncio.create_task(run_bot())
-    await asyncio.gather(web_task, bot_task)
+    try:
+        await asyncio.gather(
+            start_web_server(),      # Keeps the Render instance alive
+            bot.start(TOKEN)         # Starts the Discord bot
+        )
+    except Exception as e:
+        print(f"[Fatal Error] Startup failed: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"[Fatal Error] Uncaught exception in __main__: {e}")
