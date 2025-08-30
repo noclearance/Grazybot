@@ -46,6 +46,7 @@ ai_model = genai.GenerativeModel('gemini-1.0-pro')
 WOM_SKILLS = ["overall", "attack", "defence", "strength", "hitpoints", "ranged", "prayer", "magic", "cooking", "woodcutting", "fletching", "fishing", "firemaking", "crafting", "smithing", "mining", "herblore", "agility", "thieving", "slayer", "farming", "runecraft", "hunter", "construction"]
 intents = discord.Intents.default()
 intents.members = True
+intents.message_content = True # <-- FIX: This intent is required for the bot to read message content.
 bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 bot.active_polls = {}
 
@@ -667,8 +668,8 @@ async def event_manager():
                     await message.edit(embed=embed)
             else:
                  if len(embed.fields) < 3:
-                    embed.add_field(name="Entries", value=new_entry_text, inline=True)
-                    await message.edit(embed=embed)
+                     embed.add_field(name="Entries", value=new_entry_text, inline=True)
+                     await message.edit(embed=embed)
         except discord.NotFound:
             cursor_gw.execute("UPDATE giveaways SET is_active = FALSE WHERE message_id = %s", (giveaway['message_id'],))
             conn_gw.commit()
