@@ -48,7 +48,7 @@ WOM_SKILLS = ["overall", "attack", "defence", "strength", "hitpoints", "ranged",
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True # Needed for the on_message event
-bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
+bot = discord.Bot(intents=intents)
 bot.active_polls = {}
 
 # --- Command Groups ---
