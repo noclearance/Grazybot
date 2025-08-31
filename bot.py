@@ -792,7 +792,7 @@ async def on_ready():
     event_manager.start()
     daily_event_summary.start() # Start the new daily summary task
     bot.add_view(SubmissionView())
-
+    await bot.sync_commands()
 @bot.event
 async def on_message(message):
     if message.author.bot:
