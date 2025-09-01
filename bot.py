@@ -37,31 +37,18 @@ BINGO_FONT_FILE = "arial.ttf"
 # --- Environment Variable Validation ---
 if not all([TOKEN, WOM_CLAN_ID, WOM_VERIFICATION_CODE, GEMINI_API_KEY, DEBUG_GUILD_ID_STR, DATABASE_URL]):
     log.critical("CRITICAL: One or more environment variables are missing. Please check your Render dashboard.")
+    # We don't exit here, so the diagnostics command can still run and report the issue.
     
 DEBUG_GUILD_ID = int(DEBUG_GUILD_ID_STR) if DEBUG_GUILD_ID_STR else None
 
-# --- Channel ID Loading ---
-def get_channel_id(name):
-    """Safely loads a channel ID from environment variables."""
-    value = os.getenv(name)
-    if not value:
-        log.warning(f"Channel ID environment variable '{name}' is not set!")
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        log.error(f"Invalid value for channel ID '{name}': '{value}'. Must be an integer.")
-        return None
-
-SOTW_CHANNEL_ID = get_channel_id('SOTW_CHANNEL_ID')
-BINGO_CHANNEL_ID = get_channel_id('BINGO_CHANNEL_ID')
-RAFFLE_CHANNEL_ID = get_channel_id('RAFFLE_CHANNEL_ID')
-RECAP_CHANNEL_ID = get_channel_id('RECAP_CHANNEL_ID')
-ANNOUNCEMENTS_CHANNEL_ID = get_channel_id('ANNOUNCEMENTS_CHANNEL_ID')
-
-# By design, these events share channels. A comment clarifies this intent.
-GIVEAWAY_CHANNEL_ID = RAFFLE_CHANNEL_ID
-PVM_EVENT_CHANNEL_ID = ANNOUNCEMENTS_CHANNEL_ID
+# Channel IDs - Using .get() to avoid crashing if one is missing
+SOTW_CHANNEL_ID = int(os.getenv('SOTW_CHANNEL_ID', 0))
+BINGO_CHANNEL_ID = int(os.getenv('BINGO_CHANNEL_ID', 0))
+RAFFLE_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID', 0))
+GIVEAWAY_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID', 0)) # Uses raffle channel
+RECAP_CHANNEL_ID = int(os.getenv('RECAP_CHANNEL_ID', 0))
+ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID', 0))
+PVM_EVENT_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID', 0))
 
 # Configure the Gemini AI
 if GEMINI_API_KEY:
@@ -80,7 +67,8 @@ bot.db_pool = None # To be initialized in on_ready
 bot.active_polls = {}
 
 # --- Command Groups ---
-admin = bot.create_group("admin", "Admin-only commands")
+admin = discord.SlashCommandGroup("admin", "Admin-only commands")
+bot.add_application_command(admin)
 
 # --- Database & Threading Helpers ---
 async def run_in_executor(func, *args, **kwargs):
@@ -92,8 +80,7 @@ async def setup_database():
     """Sets up the necessary database tables if they don't exist using asyncpg."""
     try:
         async with bot.db_pool.acquire() as conn:
-            # Added guild_id to active_competitions for multi-guild support
-            await conn.execute("""CREATE TABLE IF NOT EXISTS active_competitions (id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE, guild_id BIGINT)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS active_competitions (id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE)""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT, final_ping_sent BOOLEAN DEFAULT FALSE)""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS raffle_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, raffle_id INTEGER REFERENCES raffles(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, source TEXT DEFAULT 'self')""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, board_json TEXT, message_id BIGINT, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE)""")
@@ -123,7 +110,6 @@ class SotwPollView(discord.ui.View):
         vote_description = "\n\n**Current Votes:**\n"
         for skill, voters in self.votes.items(): vote_description += f"**{skill.capitalize()}**: {len(voters)} vote(s)\n"
         
-        # FIX: Ensure current_desc is a string to prevent TypeError
         current_desc = embed.description if embed.description else ""
         embed.description = current_desc + vote_description
         embed.set_footer(text=f"Poll started by {self.author.display_name}", icon_url=self.author.display_avatar.url); 
@@ -152,28 +138,25 @@ class FinishButton(discord.ui.Button):
             view = self.view
             if not any(v for v in view.votes.values()): return await interaction.followup.send("No votes cast yet.", ephemeral=True)
             winner = max(view.votes, key=lambda k: len(view.votes[k]))
-            data, error = await create_competition(WOM_CLAN_ID, winner, 7, interaction.guild.id)
+            data, error = await create_competition(WOM_CLAN_ID, winner, 7)
             if error: await interaction.followup.send(f"Poll finished, but failed to start for **{winner.capitalize()}**: {error}", ephemeral=True); return
             
             sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
-            if not sotw_channel:
-                log.error("SOTW_CHANNEL_ID is not configured or invalid.")
-                return await interaction.followup.send("Error: SOTW channel is not configured correctly on the bot.", ephemeral=True)
-
-            comp = data['competition']
-            prompt = f"Write a Discord embed JSON announcing a Skill of the Week competition for **{winner.capitalize()}**, lasting 7 days, as the winner of the clan poll."
-            embed = await generate_embed_from_prompt(prompt)
-            if not embed:
-                 embed = discord.Embed(title=f"⚔️ SOTW Started: {winner.capitalize()}! ⚔️", description=f"The clan has spoken! The grind for **{winner.capitalize()}** begins now!", color=5763719)
-            
-            start_dt = datetime.fromisoformat(comp['startsAt'].replace('Z', '+00:00')); end_dt = datetime.fromisoformat(comp['endsAt'].replace('Z', '+00:00'))
-            embed.url = f"https://wiseoldman.net/competitions/{comp['id']}"
-            embed.add_field(name="Start Time", value=f"<t:{int(start_dt.timestamp())}:F>", inline=True)
-            embed.add_field(name="End Time", value=f"<t:{int(end_dt.timestamp())}:F>", inline=True)
-            embed.set_footer(text=f"Competition started by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
-            sotw_message = await sotw_channel.send(embed=embed)
-            await send_global_announcement("sotw_start", {"skill": winner.capitalize(), "duration": "7 days"}, sotw_message.jump_url)
-            await interaction.followup.send("Competition created in the SOTW channel!", ephemeral=True)
+            if sotw_channel:
+                comp = data['competition']
+                prompt = f"Write a Discord embed JSON announcing a Skill of the Week competition for **{winner.capitalize()}**, lasting 7 days, as the winner of the clan poll."
+                embed = await generate_embed_from_prompt(prompt)
+                if not embed:
+                     embed = discord.Embed(title=f"⚔️ SOTW Started: {winner.capitalize()}! ⚔️", description=f"The clan has spoken! The grind for **{winner.capitalize()}** begins now!", color=5763719)
+                
+                start_dt = datetime.fromisoformat(comp['startsAt'].replace('Z', '+00:00')); end_dt = datetime.fromisoformat(comp['endsAt'].replace('Z', '+00:00'))
+                embed.url = f"https://wiseoldman.net/competitions/{comp['id']}"
+                embed.add_field(name="Start Time", value=f"<t:{int(start_dt.timestamp())}:F>", inline=True)
+                embed.add_field(name="End Time", value=f"<t:{int(end_dt.timestamp())}:F>", inline=True)
+                embed.set_footer(text=f"Competition started by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+                sotw_message = await sotw_channel.send(embed=embed)
+                await send_global_announcement("sotw_start", {"skill": winner.capitalize(), "duration": "7 days"}, sotw_message.jump_url)
+                await interaction.followup.send("Competition created in the SOTW channel!", ephemeral=True)
             
             for item in view.children: item.disabled = True
             await interaction.message.edit(view=view)
@@ -184,17 +167,14 @@ class FinishButton(discord.ui.Button):
 
 # --- Bingo Submission View ---
 class SubmissionView(discord.ui.View):
-    def __init__(self, submission_id: int):
+    def __init__(self):
         super().__init__(timeout=None)
-        # FIX: Store submission_id directly in the button custom_ids for robustness
-        self.approve_button.custom_id = f"approve_submission:{submission_id}"
-        self.deny_button.custom_id = f"deny_submission:{submission_id}"
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="approve_submission")
     async def approve_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            submission_id = int(interaction.custom_id.split(":")[1])
+            submission_id = int(interaction.message.embeds[0].footer.text.split(": ")[1])
             async with bot.db_pool.acquire() as conn:
                 async with conn.transaction():
                     rec = await conn.fetchrow("SELECT user_id, task_name, bingo_id FROM bingo_submissions WHERE id = $1 AND status = 'pending'", submission_id)
@@ -214,11 +194,11 @@ class SubmissionView(discord.ui.View):
             log.error(f"Error in approve_button: {e}", exc_info=True)
             await interaction.followup.send("An error occurred while approving the submission.", ephemeral=True)
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="deny_submission")
     async def deny_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            submission_id = int(interaction.custom_id.split(":")[1])
+            submission_id = int(interaction.message.embeds[0].footer.text.split(": ")[1])
             res = await bot.db_pool.execute("UPDATE bingo_submissions SET status = 'denied' WHERE id = $1 AND status = 'pending'", submission_id)
             if res == "UPDATE 0":
                 await interaction.message.delete()
@@ -249,7 +229,7 @@ async def award_points(member: discord.Member, amount: int, reason: str):
     except Exception as e:
         log.error(f"Failed to award points/send DM to {member.id}: {e}", exc_info=True)
 
-async def create_competition(clan_id: str, skill: str, duration_days: int, guild_id: int):
+async def create_competition(clan_id: str, skill: str, duration_days: int):
     url = "https://api.wiseoldman.net/v2/competitions"
     start_date = datetime.now(timezone.utc) + timedelta(minutes=1); end_date = start_date + timedelta(days=duration_days)
     payload = {"title": f"{skill.capitalize()} SOTW ({duration_days} days)","metric": skill,"startsAt": start_date.isoformat(),"endsAt": end_date.isoformat(),"groupId": int(clan_id),"groupVerificationCode": WOM_VERIFICATION_CODE}
@@ -258,7 +238,7 @@ async def create_competition(clan_id: str, skill: str, duration_days: int, guild
             if response.status == 201:
                 comp_data = await response.json()
                 c = comp_data['competition']
-                await bot.db_pool.execute("INSERT INTO active_competitions (id, title, starts_at, ends_at, guild_id) VALUES ($1, $2, $3, $4, $5)", c['id'], c['title'], c['startsAt'], c['endsAt'], guild_id)
+                await bot.db_pool.execute("INSERT INTO active_competitions (id, title, starts_at, ends_at) VALUES ($1, $2, $3, $4)", c['id'], c['title'], c['startsAt'], c['endsAt'])
                 return comp_data, None
             else: 
                 try:
@@ -397,11 +377,8 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
                 draw.text(((cell_x + (cell_size / 2)) - (line_width_bbox / 2), current_y), line, font=task_font, fill=(255, 255, 255), align="center")
                 current_y += line_height_bbox + 2
         
-        # FIX: Save image to in-memory buffer instead of a file
-        image_buffer = BytesIO()
-        img.save(image_buffer, format='PNG')
-        image_buffer.seek(0)
-        return image_buffer, None
+        output_path = "bingo_board.png"; img.save(output_path)
+        return output_path, None
     except Exception as e:
         log.error(f"An unexpected error occurred during image generation: {e}", exc_info=True)
         return None, str(e)
@@ -416,7 +393,7 @@ async def update_bingo_board_post(bingo_id: int):
             completed_tiles = [rec['task_name'] for rec in completed_recs]
         
         board_tasks = json.loads(event_data['board_json'])
-        image_buffer, error = await run_in_executor(generate_bingo_image, board_tasks, completed_tiles)
+        image_path, error = await run_in_executor(generate_bingo_image, board_tasks, completed_tiles)
         if error:
             log.error(f"Failed to update bingo board image: {error}")
             return
@@ -424,10 +401,11 @@ async def update_bingo_board_post(bingo_id: int):
         bingo_channel = bot.get_channel(BINGO_CHANNEL_ID)
         if bingo_channel:
             message = await bingo_channel.fetch_message(event_data["message_id"])
-            new_file = discord.File(image_buffer, filename="bingo_board.png")
-            embed = message.embeds[0]
-            embed.set_image(url="attachment://bingo_board.png")
-            await message.edit(embed=embed, files=[new_file])
+            with open(image_path, 'rb') as f:
+                new_file = discord.File(f, filename="bingo_board.png")
+                embed = message.embeds[0]
+                embed.set_image(url="attachment://bingo_board.png")
+                await message.edit(embed=embed, files=[new_file])
     except discord.NotFound:
         log.warning(f"Could not find bingo message {event_data['message_id']} to update.")
     except Exception as e:
@@ -436,7 +414,7 @@ async def update_bingo_board_post(bingo_id: int):
 async def send_global_announcement(event_type: str, details: dict, message_url: str):
     announcement_channel = bot.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
     if not announcement_channel:
-        log.error("Global announcements channel not found. Cannot send announcement.")
+        log.error("Global announcements channel not found.")
         return
     if event_type == "sotw_start":
         title = f"⚔️ New SOTW: {details.get('skill', 'Unknown')}!"
@@ -564,20 +542,15 @@ async def award_sotw_winners_for_comp(comp):
                 if response.status == 200:
                     comp_data = await response.json()
                     for i, participant in enumerate(comp_data.get('participations', [])[:3]):
-                        await award_sotw_winner_points(participant, i, comp['title'], comp['guild_id'])
+                        await award_sotw_winner_points(participant, i, comp['title'])
     except Exception as e:
         log.error(f"Error awarding SOTW winners for comp {comp['id']}: {e}", exc_info=True)
 
-async def award_sotw_winner_points(participant, rank, title, guild_id):
+async def award_sotw_winner_points(participant, rank, title):
     osrs_name = participant['player']['displayName']
     discord_id = await bot.db_pool.fetchval("SELECT discord_id FROM user_links WHERE osrs_name = $1", osrs_name)
     if discord_id:
-        # FIX: Use the correct guild_id from the competition record
-        guild = bot.get_guild(guild_id)
-        if not guild:
-            log.warning(f"Could not find guild with ID {guild_id} to award SOTW points.")
-            return
-        member = guild.get_member(discord_id)
+        member = bot.get_guild(DEBUG_GUILD_ID).get_member(discord_id)
         if member:
             point_values = [100, 50, 25]
             await award_points(member, point_values[rank], f"placing #{rank+1} in the {title} SOTW")
@@ -598,9 +571,7 @@ async def handle_raffle_management():
     for r in raffles_to_draw:
         asyncio.create_task(draw_raffle_winner(raffle_channel, r['id']))
 
-# FIX: Add a comment explaining this task is a placeholder
 async def handle_bingo_management():
-    """Placeholder for future bingo event management, like reminders or auto-ending."""
     pass
 
 async def handle_giveaway_management():
@@ -642,7 +613,7 @@ async def on_ready():
 
         event_manager.start()
         daily_event_summary.start()
-        bot.add_view(SubmissionView(submission_id=0)) # Add a dummy view for persistent buttons
+        bot.add_view(SubmissionView())
         await bot.sync_commands()
         log.info(f"{bot.user} is online and ready!")
     except Exception as e:
@@ -661,9 +632,6 @@ async def on_message(message):
                 embed = discord.Embed(title="Gear & Inventory Guide", description=response.text, color=discord.Color.blue())
                 embed.set_footer(text=f"Guide for: {question}")
                 await message.reply(embed=embed)
-            # FIX: More specific exception handling
-            except discord.HTTPException as e:
-                log.warning(f"Could not reply to message (likely deleted): {e}")
             except Exception as e:
                 log.error(f"Error generating PVM guide: {e}", exc_info=True)
                 await message.reply("Sorry, I couldn't fetch a guide for that right now.")
@@ -744,26 +712,25 @@ sotw = bot.create_group("sotw", "Commands for Skill of the Week")
 async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_days: discord.Option(int, default=7)):
     await ctx.defer(ephemeral=True)
     try:
-        data, error = await create_competition(WOM_CLAN_ID, skill, duration_days, ctx.guild.id)
+        data, error = await create_competition(WOM_CLAN_ID, skill, duration_days)
         if error: await ctx.edit(content=error); return
         sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
-        if not sotw_channel:
-            return await ctx.edit(content="Error: SOTW_CHANNEL_ID is not configured correctly.")
-            
-        comp = data['competition']
-        prompt = f"Write a Discord embed JSON announcing a Skill of the Week: **{skill.capitalize()}**, lasting **{duration_days}** days."
-        embed = await generate_embed_from_prompt(prompt)
-        if not embed:
-            embed = discord.Embed(title=f"⚔️ SOTW Started: {skill.capitalize()}! ⚔️", description=f"The great grind for **{skill.capitalize()}** begins now!", color=5763719)
-        start_dt = datetime.fromisoformat(comp['startsAt'].replace('Z', '+00:00')); end_dt = datetime.fromisoformat(comp['endsAt'].replace('Z', '+00:00'))
-        embed.url = f"https://wiseoldman.net/competitions/{comp['id']}"
-        embed.add_field(name="Start Time", value=f"<t:{int(start_dt.timestamp())}:F>", inline=True)
-        embed.add_field(name="End Time", value=f"<t:{int(end_dt.timestamp())}:F>", inline=True)
-        embed.set_footer(text=f"Competition started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
-        sotw_message = await sotw_channel.send(embed=embed)
-        await send_global_announcement("sotw_start", {"skill": skill.capitalize(), "duration": f"{duration_days} days"}, sotw_message.jump_url)
-        await ctx.edit(content=f"SOTW for {skill.capitalize()} created! [Jump]({sotw_message.jump_url})")
-
+        if sotw_channel:
+            comp = data['competition']
+            prompt = f"Write a Discord embed JSON announcing a Skill of the Week: **{skill.capitalize()}**, lasting **{duration_days}** days."
+            embed = await generate_embed_from_prompt(prompt)
+            if not embed:
+                embed = discord.Embed(title=f"⚔️ SOTW Started: {skill.capitalize()}! ⚔️", description=f"The great grind for **{skill.capitalize()}** begins now!", color=5763719)
+            start_dt = datetime.fromisoformat(comp['startsAt'].replace('Z', '+00:00')); end_dt = datetime.fromisoformat(comp['endsAt'].replace('Z', '+00:00'))
+            embed.url = f"https://wiseoldman.net/competitions/{comp['id']}"
+            embed.add_field(name="Start Time", value=f"<t:{int(start_dt.timestamp())}:F>", inline=True)
+            embed.add_field(name="End Time", value=f"<t:{int(end_dt.timestamp())}:F>", inline=True)
+            embed.set_footer(text=f"Competition started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+            sotw_message = await sotw_channel.send(embed=embed)
+            await send_global_announcement("sotw_start", {"skill": skill.capitalize(), "duration": f"{duration_days} days"}, sotw_message.jump_url)
+            await ctx.edit(content=f"SOTW for {skill.capitalize()} created! [Jump]({sotw_message.jump_url})")
+        else:
+            await ctx.edit(content="Error: SOTW Channel ID not configured correctly.")
     except Exception as e:
         log.error(f"Error in /sotw start: {e}", exc_info=True)
         try: await ctx.edit(content="An unexpected error occurred. Please check the logs.")
@@ -778,12 +745,12 @@ async def poll(ctx: discord.ApplicationContext):
         poll_skills = random.sample(WOM_SKILLS, 6); view = SotwPollView(ctx.author); view.add_buttons(poll_skills)
         embed = await view.create_embed();
         sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
-        if not sotw_channel:
-            return await ctx.edit(content="Error: SOTW_CHANNEL_ID is not configured correctly.")
-        
-        poll_message = await sotw_channel.send(embed=embed, view=view)
-        await ctx.edit(content="SOTW Poll created!"); view.message_id = poll_message.id
-        bot.active_polls[ctx.guild.id] = view
+        if sotw_channel:
+            poll_message = await sotw_channel.send(embed=embed, view=view)
+            await ctx.edit(content="SOTW Poll created!"); view.message_id = poll_message.id
+            bot.active_polls[ctx.guild.id] = view
+        else:
+            await ctx.edit(content="Error: SOTW Channel ID not configured correctly.")
     except Exception as e:
         log.error(f"Error in /sotw poll: {e}", exc_info=True)
         try: await ctx.edit(content="An unexpected error occurred. Please check the logs.")
@@ -1116,7 +1083,7 @@ async def start_bingo(ctx, duration_days: int):
         if len(board_tasks) < 25:
             return await ctx.edit(content="Error: Not enough tasks in total to create a 25-slot board.")
         random.shuffle(board_tasks); board_tasks = board_tasks[:25]
-        image_buffer, error = await run_in_executor(generate_bingo_image, board_tasks)
+        image_path, error = await run_in_executor(generate_bingo_image, board_tasks)
         if error: return await ctx.edit(content=f"Failed to generate bingo image: {error}")
         bingo_channel = bot.get_channel(BINGO_CHANNEL_ID)
         if not bingo_channel: return await ctx.edit(content="Error: Bingo Channel ID not configured correctly.")
@@ -1125,7 +1092,7 @@ async def start_bingo(ctx, duration_days: int):
         embed = await generate_embed_from_prompt(prompt)
         if not embed:
             embed = discord.Embed(title="🧩 A New Clan Bingo Has Started! 🧩", description=f"A fresh board of challenges awaits for the next **{duration_str}**!", color=11027200)
-        file = discord.File(image_buffer, filename="bingo_board.png")
+        file = discord.File(image_path, filename="bingo_board.png")
         embed.set_image(url="attachment://bingo_board.png")
         ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
         embed.add_field(name="Event Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
@@ -1176,8 +1143,7 @@ async def view_submissions(ctx):
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
             embed.add_field(name="Proof", value=f"[Click to view]({sub['proof_url']})", inline=False)
             embed.set_footer(text=f"Submission ID: {sub['id']}")
-            # Create a new view for each submission with the correct ID
-            await ctx.channel.send(embed=embed, view=SubmissionView(submission_id=sub['id']))
+            await ctx.channel.send(embed=embed, view=SubmissionView())
     except Exception as e:
         log.error(f"Error in /bingo submissions: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching submissions.")
@@ -1250,23 +1216,12 @@ async def award_sotw_winners(ctx, competition_id: int):
                 if response.status != 200:
                     return await ctx.edit(content=f"Could not fetch details for competition ID {competition_id}.")
                 comp_data = await response.json()
-
-        # We need the guild_id from our database for this competition
-        comp_record = await bot.db_pool.fetchrow("SELECT guild_id FROM active_competitions WHERE id = $1", competition_id)
-        if not comp_record or not comp_record['guild_id']:
-            return await ctx.edit(content="Could not find a guild associated with this competition in the database.")
-        
-        guild_id = comp_record['guild_id']
-        guild = bot.get_guild(guild_id)
-        if not guild:
-            return await ctx.edit(content=f"Bot is not in the guild (ID: {guild_id}) where this competition was started.")
-
         awarded_to = []
         point_values = [100, 50, 25]
         for i, participant in enumerate(comp_data.get('participations', [])[:3]):
             discord_id = await bot.db_pool.fetchval("SELECT discord_id FROM user_links WHERE osrs_name = $1", participant['player']['displayName'])
             if discord_id:
-                member = guild.get_member(discord_id)
+                member = ctx.guild.get_member(discord_id)
                 if member:
                     await award_points(member, point_values[i], f"placing #{i+1} in the {comp_data['title']} SOTW")
                     awarded_to.append(f"#{i+1}: {member.display_name} ({point_values[i]} points)")
@@ -1402,5 +1357,20 @@ async def run_bot():
                 log.warning("BOT is being rate-limited by Discord. Retrying in 5 minutes...")
                 await asyncio.sleep(300)
             else:
-                log.critical
+                log.critical(f"An unexpected HTTP error occurred with the bot: {e}", exc_info=True)
+                break
+        except discord.errors.LoginFailure as e:
+            log.critical(f"LOGIN FAILED: {e}. Please check your bot TOKEN in the environment variables.")
+            break
+        except Exception as e:
+            log.critical(f"An unexpected error occurred while running the bot: {e}", exc_info=True)
+            break
+
+async def main():
+    web_task = asyncio.create_task(start_web_server())
+    bot_task = asyncio.create_task(run_bot())
+    await asyncio.gather(web_task, bot_task)
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
