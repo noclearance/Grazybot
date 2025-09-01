@@ -9,14 +9,18 @@ from aiohttp import web
 import asyncio
 from datetime import datetime, timedelta, timezone, time
 import random
-import psycopg2
-import psycopg2.extras
+import asyncpg
 import json
 import textwrap
 from PIL import Image, ImageDraw, ImageFont
 import google.generativeai as genai
 from io import BytesIO
 from functools import partial
+import logging
+
+# --- Basic Logging Setup ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
+log = logging.getLogger(__name__)
 
 # --- Configuration & Setup ---
 load_dotenv()
@@ -48,6 +52,7 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = discord.Bot(intents=intents)
+bot.db_pool = None # To be initialized in on_ready
 bot.active_polls = {}
 
 # --- Command Groups ---
@@ -55,45 +60,34 @@ admin = discord.SlashCommandGroup("admin", "Admin-only commands")
 bot.add_application_command(admin)
 
 # --- Database & Threading Helpers ---
-def get_db_connection():
-    """Establishes a connection to the PostgreSQL database. This is a blocking operation."""
-    return psycopg2.connect(DATABASE_URL)
-
 async def run_in_executor(func, *args, **kwargs):
-    """Runs a synchronous function in a separate thread to avoid blocking."""
+    """Runs a synchronous function (like image generation) in a separate thread."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, partial(func, *args, **kwargs))
 
-def _setup_database_sync():
-    """Synchronous part of database setup to be run in a thread."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS active_competitions (id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE)""")
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT, final_ping_sent BOOLEAN DEFAULT FALSE)""")
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS raffle_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, raffle_id INTEGER REFERENCES raffles(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, source TEXT DEFAULT 'self')""")
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, board_json TEXT, message_id BIGINT, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE)""")
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS bingo_submissions (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id BIGINT, task_name TEXT, proof_url TEXT, status TEXT DEFAULT 'pending', bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE)""")
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS bingo_completed_tiles (bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE, task_name TEXT, PRIMARY KEY (bingo_id, task_name))""")
-    cursor.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS giveaways (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT NOT NULL, ends_at TIMESTAMPTZ NOT NULL, max_number INTEGER NOT NULL, winner_id BIGINT, winning_number INTEGER)""")
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS giveaway_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, giveaway_id INTEGER REFERENCES giveaways(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, chosen_number INTEGER NOT NULL, UNIQUE (giveaway_id, chosen_number), UNIQUE (giveaway_id, user_id))""")
-    cursor.execute("CREATE TABLE IF NOT EXISTS pvm_guides (boss_name TEXT PRIMARY KEY, guide_text TEXT NOT NULL)")
-    conn.commit()
-    cursor.close()
-    conn.close()
-
 async def setup_database():
-    """Runs the synchronous database setup in a thread."""
-    await run_in_executor(_setup_database_sync)
+    """Sets up the necessary database tables if they don't exist using asyncpg."""
+    async with bot.db_pool.acquire() as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS active_competitions (id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE)""")
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT, final_ping_sent BOOLEAN DEFAULT FALSE)""")
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS raffle_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, raffle_id INTEGER REFERENCES raffles(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, source TEXT DEFAULT 'self')""")
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, board_json TEXT, message_id BIGINT, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE)""")
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS bingo_submissions (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id BIGINT, task_name TEXT, proof_url TEXT, status TEXT DEFAULT 'pending', bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE)""")
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS bingo_completed_tiles (bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE, task_name TEXT, PRIMARY KEY (bingo_id, task_name))""")
+        await conn.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
+        await conn.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS giveaways (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT NOT NULL, ends_at TIMESTAMPTZ NOT NULL, max_number INTEGER NOT NULL, winner_id BIGINT, winning_number INTEGER)""")
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS giveaway_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, giveaway_id INTEGER REFERENCES giveaways(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, chosen_number INTEGER NOT NULL, UNIQUE (giveaway_id, chosen_number), UNIQUE (giveaway_id, user_id))""")
+        await conn.execute("CREATE TABLE IF NOT EXISTS pvm_guides (boss_name TEXT PRIMARY KEY, guide_text TEXT NOT NULL)")
+    log.info("Database setup checked/completed.")
 
 # --- SOTW Poll View ---
 class SotwPollView(discord.ui.View):
@@ -161,7 +155,7 @@ class FinishButton(discord.ui.Button):
             await interaction.message.edit(view=view)
             bot.active_polls.pop(interaction.guild.id, None)
         except Exception as e:
-            print(f"Error in FinishButton callback: {e}")
+            log.error(f"Error in FinishButton callback: {e}", exc_info=True)
             await interaction.followup.send("An error occurred while finishing the poll.", ephemeral=True)
 
 # --- Bingo Submission View ---
@@ -169,90 +163,53 @@ class SubmissionView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    def _approve_submission_sync(self, submission_id):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, task_name, bingo_id FROM bingo_submissions WHERE id = %s AND status = 'pending'", (submission_id,))
-        submission_data = cursor.fetchone()
-        if not submission_data:
-            conn.close()
-            return None
-        user_id, task_name, bingo_id = submission_data
-        cursor.execute("UPDATE bingo_submissions SET status = 'approved' WHERE id = %s", (submission_id,))
-        cursor.execute("INSERT INTO bingo_completed_tiles (bingo_id, task_name) VALUES (%s, %s) ON CONFLICT (bingo_id, task_name) DO NOTHING", (bingo_id, task_name))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"user_id": user_id, "task_name": task_name, "bingo_id": bingo_id}
-
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="approve_submission")
     async def approve_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
             submission_id = int(interaction.message.embeds[0].footer.text.split(": ")[1])
-            result = await run_in_executor(self._approve_submission_sync, submission_id)
-            if not result:
-                await interaction.message.delete()
-                return await interaction.followup.send("This submission was already handled or does not exist.", ephemeral=True)
+            async with bot.db_pool.acquire() as conn:
+                async with conn.transaction():
+                    rec = await conn.fetchrow("SELECT user_id, task_name, bingo_id FROM bingo_submissions WHERE id = $1 AND status = 'pending'", submission_id)
+                    if not rec:
+                        await interaction.message.delete()
+                        return await interaction.followup.send("This submission was already handled or does not exist.", ephemeral=True)
+                    await conn.execute("UPDATE bingo_submissions SET status = 'approved' WHERE id = $1", submission_id)
+                    await conn.execute("INSERT INTO bingo_completed_tiles (bingo_id, task_name) VALUES ($1, $2) ON CONFLICT (bingo_id, task_name) DO NOTHING", rec['bingo_id'], rec['task_name'])
+            
             await interaction.message.delete()
             await interaction.followup.send(f"Submission #{submission_id} approved.", ephemeral=True)
-            member = interaction.guild.get_member(result['user_id'])
+            member = interaction.guild.get_member(rec['user_id'])
             if member:
-                await award_points(member, 25, f"completing the bingo task: '{result['task_name']}'")
-            await update_bingo_board_post(result['bingo_id'])
+                await award_points(member, 25, f"completing the bingo task: '{rec['task_name']}'")
+            await update_bingo_board_post(rec['bingo_id'])
         except Exception as e:
-            print(f"Error in approve_button: {e}")
+            log.error(f"Error in approve_button: {e}", exc_info=True)
             await interaction.followup.send("An error occurred while approving the submission.", ephemeral=True)
-
-    def _deny_submission_sync(self, submission_id):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE bingo_submissions SET status = 'denied' WHERE id = %s AND status = 'pending'", (submission_id,))
-        updated_rows = cursor.rowcount
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return updated_rows
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="deny_submission")
     async def deny_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
             submission_id = int(interaction.message.embeds[0].footer.text.split(": ")[1])
-            updated_rows = await run_in_executor(self._deny_submission_sync, submission_id)
-            if updated_rows == 0:
+            res = await bot.db_pool.execute("UPDATE bingo_submissions SET status = 'denied' WHERE id = $1 AND status = 'pending'", submission_id)
+            if res == "UPDATE 0":
                 await interaction.message.delete()
                 return await interaction.followup.send("This submission was already handled.", ephemeral=True)
             await interaction.message.delete()
             await interaction.followup.send(f"Submission #{submission_id} denied.", ephemeral=True)
         except Exception as e:
-            print(f"Error in deny_button: {e}")
+            log.error(f"Error in deny_button: {e}", exc_info=True)
             await interaction.followup.send("An error occurred while denying the submission.", ephemeral=True)
 
 # --- Helper Functions ---
-def _award_points_sync(member_id, amount):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO clan_points (discord_id, points) VALUES (%s, 0) ON CONFLICT (discord_id) DO NOTHING", (member_id,))
-        cursor.execute("UPDATE clan_points SET points = points + %s WHERE discord_id = %s RETURNING points", (amount, member_id))
-        new_balance = cursor.fetchone()[0]
-        conn.commit()
-        return new_balance
-    except Exception as e:
-        print(f"DB Error in _award_points_sync: {e}")
-        conn.rollback()
-        return None
-    finally:
-        cursor.close()
-        conn.close()
-
 async def award_points(member: discord.Member, amount: int, reason: str):
     if not member or member.bot: return
-    new_balance = await run_in_executor(_award_points_sync, member.id, amount)
-    if new_balance is None:
-        return
     try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute("INSERT INTO clan_points (discord_id, points) VALUES ($1, 0) ON CONFLICT (discord_id) DO NOTHING", member.id)
+            new_balance = await conn.fetchval("UPDATE clan_points SET points = points + $1 WHERE discord_id = $2 RETURNING points", amount, member.id)
+        
         dm_embed = discord.Embed(
             title="🏆 Points Awarded!",
             description=f"You have been awarded **{amount} Clan Points** for *{reason}*! Clan Points are a measure of your dedication and can be used for rewards. Well done.",
@@ -261,17 +218,9 @@ async def award_points(member: discord.Member, amount: int, reason: str):
         dm_embed.add_field(name="New Balance", value=f"You now have **{new_balance}** Clan Points.")
         await member.send(embed=dm_embed)
     except discord.Forbidden:
-        print(f"Could not send DM to {member.display_name} (they may have DMs disabled).")
+        log.warning(f"Could not send DM to {member.display_name} (they may have DMs disabled).")
     except Exception as e:
-        print(f"Failed to send points DM: {e}")
-
-def _create_competition_db_sync(comp_data):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO active_competitions (id, title, starts_at, ends_at) VALUES (%s, %s, %s, %s)", (comp_data['competition']['id'], comp_data['competition']['title'], comp_data['competition']['startsAt'], comp_data['competition']['endsAt']))
-    conn.commit()
-    cursor.close()
-    conn.close()
+        log.error(f"Failed to award points/send DM to {member.id}: {e}", exc_info=True)
 
 async def create_competition(clan_id: str, skill: str, duration_days: int):
     url = "https://api.wiseoldman.net/v2/competitions"
@@ -281,9 +230,15 @@ async def create_competition(clan_id: str, skill: str, duration_days: int):
         async with session.post(url, json=payload) as response:
             if response.status == 201:
                 comp_data = await response.json()
-                await run_in_executor(_create_competition_db_sync, comp_data)
+                c = comp_data['competition']
+                await bot.db_pool.execute("INSERT INTO active_competitions (id, title, starts_at, ends_at) VALUES ($1, $2, $3, $4)", c['id'], c['title'], c['startsAt'], c['endsAt'])
                 return comp_data, None
-            else: return None, f"API Error: {(await response.json()).get('message', 'Failed to create competition.')}"
+            else: 
+                try:
+                    error_msg = await response.json()
+                    return None, f"API Error: {error_msg.get('message', 'Failed to create competition.')}"
+                except Exception:
+                    return None, f"API Error: Status {response.status}"
 
 async def generate_embed_from_prompt(prompt: str) -> discord.Embed | None:
     full_prompt = f"""
@@ -304,111 +259,89 @@ async def generate_embed_from_prompt(prompt: str) -> discord.Embed | None:
         ai_data = json.loads(clean_json_string)
         return discord.Embed.from_dict(ai_data)
     except Exception as e:
-        print(f"An error occurred during Gemini embed generation: {e}")
+        log.error(f"An error occurred during Gemini embed generation: {e}", exc_info=True)
         return None
-
-def _draw_raffle_winner_sync(raffle_id):
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute("SELECT * FROM raffles WHERE id = %s", (raffle_id,))
-    raffle_data = cursor.fetchone()
-    if not raffle_data:
-        cursor.close(); conn.close()
-        return {"status": "error", "message": "Could not find the specified raffle to draw."}
-    prize = raffle_data['prize']
-    cursor.execute("SELECT user_id FROM raffle_entries WHERE raffle_id = %s", (raffle_id,))
-    entries = cursor.fetchall()
-    if not entries:
-        conn.close()
-        return {"status": "no_entries", "prize": prize}
-    winner_id = random.choice(entries)['user_id']
-    cursor.execute("UPDATE raffles SET winner_id = %s WHERE id = %s", (winner_id, raffle_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
-    _award_points_sync(winner_id, 50)
-    return {"status": "success", "prize": prize, "winner_id": winner_id}
 
 async def draw_raffle_winner(channel: discord.TextChannel, raffle_id: int):
-    result = await run_in_executor(_draw_raffle_winner_sync, raffle_id)
-    if result['status'] == 'error':
-        print(result['message'])
-        return
-    if result['status'] == 'no_entries':
-        await channel.send(f"The raffle for **{result['prize']}** has ended, but unfortunately, no one entered.")
-        return
-    winner_user = await bot.fetch_user(result['winner_id'])
-    prompt = f"Create a Discord embed JSON announcing the winner of a raffle. The winner is {winner_user.mention} and they won **{result['prize']}**. Congratulate them with epic flair."
-    embed = await generate_embed_from_prompt(prompt)
-    if not embed:
-        embed = discord.Embed(title="🎉 Raffle Winner Announcement! 🎉", description=f"Congratulations to {winner_user.mention}, you have won the raffle!", color=discord.Color.fuchsia())
-    embed.add_field(name="Prize", value=f"**{result['prize']}**", inline=False)
-    embed.add_field(name="Bonus Reward", value="You have also been awarded **50 Clan Points**!", inline=False)
-    embed.set_footer(text="Thanks to everyone for participating!")
-    embed.set_thumbnail(url=winner_user.display_avatar.url)
-    await channel.send(content=f"Congratulations {winner_user.mention}!", embed=embed)
+    try:
+        async with bot.db_pool.acquire() as conn:
+            raffle_data = await conn.fetchrow("SELECT * FROM raffles WHERE id = $1", raffle_id)
+            if not raffle_data:
+                log.error(f"Could not find raffle {raffle_id} to draw.")
+                return
+            
+            entries = await conn.fetch("SELECT user_id FROM raffle_entries WHERE raffle_id = $1", raffle_id)
+            if not entries:
+                await channel.send(f"The raffle for **{raffle_data['prize']}** has ended, but unfortunately, no one entered.")
+                return
 
-def _draw_giveaway_winner_sync(giveaway_id):
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute("SELECT * FROM giveaways WHERE id = %s", (giveaway_id,))
-    giveaway_data = cursor.fetchone()
-    if not giveaway_data:
-        cursor.close(); conn.close()
-        return None
-    prize = giveaway_data['prize']
-    max_number = giveaway_data['max_number']
-    winning_number = random.randint(1, max_number)
-    cursor.execute("SELECT user_id FROM giveaway_entries WHERE giveaway_id = %s AND chosen_number = %s", (giveaway_id, winning_number))
-    winner_data = cursor.fetchone()
-    if winner_data:
-        winner_id = winner_data['user_id']
-        cursor.execute("UPDATE giveaways SET winner_id = %s, winning_number = %s WHERE id = %s", (winner_id, winning_number, giveaway_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"status": "winner", "prize": prize, "winning_number": winning_number, "winner_id": winner_id}
-    else:
-        cursor.execute("UPDATE giveaways SET winning_number = %s WHERE id = %s", (winning_number, giveaway_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"status": "no_winner", "prize": prize, "winning_number": winning_number}
-
-async def draw_giveaway_winner(channel: discord.TextChannel, giveaway_id: int):
-    result = await run_in_executor(_draw_giveaway_winner_sync, giveaway_id)
-    if not result:
-        return
-    embed = None
-    if result['status'] == 'winner':
-        winner_user = await bot.fetch_user(result['winner_id'])
-        prompt = f"Create a Discord embed JSON for a giveaway result. The prize was a **{result['prize']}**. The winning number was **{result['winning_number']}**, and {winner_user.mention} correctly guessed it! Congratulate them."
+            winner_record = random.choice(entries)
+            winner_id = winner_record['user_id']
+            await conn.execute("UPDATE raffles SET winner_id = $1 WHERE id = $2", winner_id, raffle_id)
+        
+        await award_points(await bot.fetch_user(winner_id), 50, f"winning the raffle for {raffle_data['prize']}")
+        
+        winner_user = await bot.fetch_user(winner_id)
+        prompt = f"Create a Discord embed JSON announcing the winner of a raffle. The winner is {winner_user.mention} and they won **{raffle_data['prize']}**. Congratulate them with epic flair."
         embed = await generate_embed_from_prompt(prompt)
         if not embed:
-            embed = discord.Embed(title=f"🎉 Giveaway Results for {result['prize']}! 🎉", description=f"Congratulations to {winner_user.mention}, who picked the lucky number!", color=discord.Color.dark_gold())
+            embed = discord.Embed(title="🎉 Raffle Winner Announcement! 🎉", description=f"Congratulations to {winner_user.mention}, you have won the raffle!", color=discord.Color.fuchsia())
+        
+        embed.add_field(name="Prize", value=f"**{raffle_data['prize']}**", inline=False)
+        embed.add_field(name="Bonus Reward", value="You have also been awarded **50 Clan Points**!", inline=False)
+        embed.set_footer(text="Thanks to everyone for participating!")
         embed.set_thumbnail(url=winner_user.display_avatar.url)
         await channel.send(content=f"Congratulations {winner_user.mention}!", embed=embed)
-    else: # no_winner
-        prompt = f"Create a Discord embed JSON for a giveaway result where nobody won. The prize was a **{result['prize']}**. The winning number was **{result['winning_number']}**, but nobody picked it. State that the prize remains in the clan vault."
-        embed = await generate_embed_from_prompt(prompt)
-        if not embed:
-            embed = discord.Embed(title=f"🎉 Giveaway Results for {result['prize']}! 🎉", description="Unfortunately, nobody picked the winning number this time. The prize remains in the clan vault!", color=discord.Color.dark_gold())
-        await channel.send(embed=embed)
-    embed.add_field(name="The Winning Number Was...", value=f"**{result['winning_number']}**", inline=False)
+    except Exception as e:
+        log.error(f"Error in draw_raffle_winner for ID {raffle_id}: {e}", exc_info=True)
+
+async def draw_giveaway_winner(channel: discord.TextChannel, giveaway_id: int):
+    try:
+        async with bot.db_pool.acquire() as conn:
+            giveaway_data = await conn.fetchrow("SELECT * FROM giveaways WHERE id = $1", giveaway_id)
+            if not giveaway_data: return
+            
+            prize = giveaway_data['prize']
+            max_number = giveaway_data['max_number']
+            winning_number = random.randint(1, max_number)
+            
+            winner_data = await conn.fetchrow("SELECT user_id FROM giveaway_entries WHERE giveaway_id = $1 AND chosen_number = $2", giveaway_id, winning_number)
+            
+            embed = None
+            if winner_data:
+                winner_id = winner_data['user_id']
+                await conn.execute("UPDATE giveaways SET winner_id = $1, winning_number = $2 WHERE id = $3", winner_id, winning_number, giveaway_id)
+                winner_user = await bot.fetch_user(winner_id)
+                prompt = f"Create a Discord embed JSON for a giveaway result. The prize was a **{prize}**. The winning number was **{winning_number}**, and {winner_user.mention} correctly guessed it! Congratulate them."
+                embed = await generate_embed_from_prompt(prompt)
+                if not embed:
+                    embed = discord.Embed(title=f"🎉 Giveaway Results for {prize}! 🎉", description=f"Congratulations to {winner_user.mention}, who picked the lucky number!", color=discord.Color.dark_gold())
+                embed.set_thumbnail(url=winner_user.display_avatar.url)
+                await channel.send(content=f"Congratulations {winner_user.mention}!", embed=embed)
+            else:
+                await conn.execute("UPDATE giveaways SET winning_number = $1 WHERE id = $2", winning_number, giveaway_id)
+                prompt = f"Create a Discord embed JSON for a giveaway result where nobody won. The prize was a **{prize}**. The winning number was **{winning_number}**, but nobody picked it. State that the prize remains in the clan vault."
+                embed = await generate_embed_from_prompt(prompt)
+                if not embed:
+                    embed = discord.Embed(title=f"🎉 Giveaway Results for {prize}! 🎉", description="Unfortunately, nobody picked the winning number this time. The prize remains in the clan vault!", color=discord.Color.dark_gold())
+                await channel.send(embed=embed)
+
+            embed.add_field(name="The Winning Number Was...", value=f"**{winning_number}**", inline=False)
+    except Exception as e:
+        log.error(f"Error in draw_giveaway_winner for ID {giveaway_id}: {e}", exc_info=True)
 
 def generate_bingo_image(tasks: list, completed_tasks: list = []):
     try:
-        width, height = 1000, 1000
-        background_color = (40, 26, 13)
+        width, height = 1000, 1000; background_color = (40, 26, 13)
         img = Image.new('RGB', (width, height), background_color)
         draw = ImageDraw.Draw(img)
         try:
             title_font = ImageFont.truetype(BINGO_FONT_FILE, size=70)
             task_font = ImageFont.truetype(BINGO_FONT_FILE, size=22)
         except IOError:
-            print(f"Warning: Font file '{BINGO_FONT_FILE}' not found. Falling back to default font.")
-            title_font = ImageFont.load_default()
-            task_font = ImageFont.load_default()
+            log.warning(f"Font file '{BINGO_FONT_FILE}' not found. Falling back to default font.")
+            title_font = ImageFont.load_default(); task_font = ImageFont.load_default()
+        
         draw.text((width/2, 60), "CLAN BINGO", font=title_font, fill=(255, 215, 0), anchor="ms")
         grid_size = 5; cell_size = 170; line_width = 4
         grid_start_x, grid_start_y = 75, 125
@@ -417,66 +350,61 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
         for i in range(grid_size + 1):
             draw.line([(grid_start_x + i * cell_size, grid_start_y), (grid_start_x + i * cell_size, grid_end_y)], fill=line_color, width=line_width)
             draw.line([(grid_start_x, grid_start_y + i * cell_size), (grid_end_x, grid_start_y + i * cell_size)], fill=line_color, width=line_width)
+        
         for i, task in enumerate(tasks):
             if i >= 25: break
-            row = i // grid_size; col = i % grid_size
+            row, col = i // grid_size, i % grid_size
             cell_x, cell_y = grid_start_x + col * cell_size, grid_start_y + row * cell_size
             if task['name'] in completed_tasks:
                 overlay = Image.new('RGBA', (cell_size - line_width, cell_size - line_width), (0, 255, 0, 90))
                 img.paste(overlay, (cell_x + line_width//2, cell_y + line_width//2), overlay)
-            task_name = task['name']
-            lines = textwrap.wrap(task_name, width=15)
+            
+            lines = textwrap.wrap(task['name'], width=15)
             total_text_height = sum(task_font.getbbox(line)[3] for line in lines)
             current_y = (cell_y + (cell_size / 2)) - (total_text_height / 2)
             for line in lines:
                 line_width_bbox, line_height_bbox = draw.textbbox((0,0), line, font=task_font)[2:4]
                 draw.text(((cell_x + (cell_size / 2)) - (line_width_bbox / 2), current_y), line, font=task_font, fill=(255, 255, 255), align="center")
                 current_y += line_height_bbox + 2
+        
         output_path = "bingo_board.png"; img.save(output_path)
         return output_path, None
     except Exception as e:
-        print(f"An unexpected error occurred during image generation: {e}")
+        log.error(f"An unexpected error occurred during image generation: {e}", exc_info=True)
         return None, str(e)
 
-def _update_bingo_board_db_sync(bingo_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT board_json, message_id FROM bingo_events WHERE id = %s", (bingo_id,))
-    event_data = cursor.fetchone()
-    if not event_data:
-        cursor.close(); conn.close()
-        return None
-    board_tasks_json, message_id = event_data
-    cursor.execute("SELECT task_name FROM bingo_completed_tiles WHERE bingo_id = %s", (bingo_id,))
-    completed_tiles = [row[0] for row in cursor.fetchall()]
-    cursor.close(); conn.close()
-    return {"board_tasks": json.loads(board_tasks_json), "message_id": message_id, "completed_tiles": completed_tiles}
-
 async def update_bingo_board_post(bingo_id: int):
-    db_data = await run_in_executor(_update_bingo_board_db_sync, bingo_id)
-    if not db_data: return
-    image_path, error = await run_in_executor(generate_bingo_image, db_data["board_tasks"], db_data["completed_tiles"])
-    if error:
-        print(f"Failed to update bingo board image: {error}")
-        return
     try:
+        async with bot.db_pool.acquire() as conn:
+            event_data = await conn.fetchrow("SELECT board_json, message_id FROM bingo_events WHERE id = $1", bingo_id)
+            if not event_data: return
+            
+            completed_recs = await conn.fetch("SELECT task_name FROM bingo_completed_tiles WHERE bingo_id = $1", bingo_id)
+            completed_tiles = [rec['task_name'] for rec in completed_recs]
+        
+        board_tasks = json.loads(event_data['board_json'])
+        image_path, error = await run_in_executor(generate_bingo_image, board_tasks, completed_tiles)
+        if error:
+            log.error(f"Failed to update bingo board image: {error}")
+            return
+            
         bingo_channel = bot.get_channel(BINGO_CHANNEL_ID)
         if bingo_channel:
-            message = await bingo_channel.fetch_message(db_data["message_id"])
+            message = await bingo_channel.fetch_message(event_data["message_id"])
             with open(image_path, 'rb') as f:
                 new_file = discord.File(f, filename="bingo_board.png")
                 embed = message.embeds[0]
                 embed.set_image(url="attachment://bingo_board.png")
                 await message.edit(embed=embed, files=[new_file])
     except discord.NotFound:
-        print(f"Could not find bingo message {db_data['message_id']} to update.")
+        log.warning(f"Could not find bingo message {event_data['message_id']} to update.")
     except Exception as e:
-        print(f"Error updating bingo board: {e}")
+        log.error(f"Error updating bingo board {bingo_id}: {e}", exc_info=True)
 
 async def send_global_announcement(event_type: str, details: dict, message_url: str):
     announcement_channel = bot.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
     if not announcement_channel:
-        print("Error: Global announcements channel not found.")
+        log.error("Global announcements channel not found.")
         return
     if event_type == "sotw_start":
         title = f"⚔️ New SOTW: {details.get('skill', 'Unknown')}!"
@@ -504,38 +432,26 @@ async def daily_event_summary():
     try:
         announcement_channel = bot.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
         if not announcement_channel:
-            print("ERROR: Cannot post daily summary, announcements channel not found.")
+            log.error("Cannot post daily summary, announcements channel not found.")
             return
 
-        def _get_active_events_sync():
-            conn = get_db_connection()
-            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at ASC")
-            competitions = cursor.fetchall()
-            cursor.execute("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC")
-            raffles = cursor.fetchall()
-            cursor.execute("SELECT * FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            bingo = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            return competitions, raffles, bingo
-
-        competitions, raffles, bingo = await run_in_executor(_get_active_events_sync)
+        async with bot.db_pool.acquire() as conn:
+            competitions = await conn.fetch("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at ASC")
+            raffles = await conn.fetch("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC")
+            bingo = await conn.fetchrow("SELECT * FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
+        
         if not competitions and not raffles and not bingo:
-            print("No active events to summarize today.")
+            log.info("No active events to summarize today.")
             return
+            
         event_data_string = ""
         if competitions:
-            event_data_string += "Skill of the Week Competitions:\n"
-            for comp in competitions:
-                event_data_string += f"- {comp['title']} (Ends <t:{int(comp['ends_at'].timestamp())}:R>)\n"
+            event_data_string += "Skill of the Week Competitions:\n" + "".join([f"- {c['title']} (Ends <t:{int(c['ends_at'].timestamp())}:R>)\n" for c in competitions])
         if raffles:
-            event_data_string += "\nRaffles:\n"
-            for raf in raffles:
-                event_data_string += f"- Prize: {raf['prize']} (Ends <t:{int(raf['ends_at'].timestamp())}:R>)\n"
+            event_data_string += "\nRaffles:\n" + "".join([f"- Prize: {r['prize']} (Ends <t:{int(r['ends_at'].timestamp())}:R>)\n" for r in raffles])
         if bingo:
-            event_data_string += "\nBingo Event:\n"
-            event_data_string += f"- A clan-wide bingo is active! (Ends <t:{int(bingo['ends_at'].timestamp())}:R>)\n"
+            event_data_string += f"\nBingo Event:\nA clan-wide bingo is active! (Ends <t:{int(bingo['ends_at'].timestamp())}:R>)\n"
+            
         prompt = f"Create a Discord embed JSON for a daily summary of active clan events. Make it engaging. Here is the data:\n{event_data_string}"
         embed = await generate_embed_from_prompt(prompt)
         if not embed:
@@ -544,32 +460,24 @@ async def daily_event_summary():
         embed.timestamp=datetime.now(timezone.utc)
         await announcement_channel.send(embed=embed)
     except Exception as e:
-        print(f"Error in daily_event_summary task: {e}")
+        log.error(f"Error in daily_event_summary task: {e}", exc_info=True)
 
 @tasks.loop(minutes=5)
 async def event_manager():
     await bot.wait_until_ready()
-    # Using individual try-except blocks to prevent one failing task from stopping others.
-    try:
-        await handle_weekly_recap()
-    except Exception as e:
-        print(f"Error in handle_weekly_recap task: {e}")
-    try:
-        await handle_sotw_management()
-    except Exception as e:
-        print(f"Error in handle_sotw_management task: {e}")
-    try:
-        await handle_raffle_management()
-    except Exception as e:
-        print(f"Error in handle_raffle_management task: {e}")
-    try:
-        await handle_bingo_management()
-    except Exception as e:
-        print(f"Error in handle_bingo_management task: {e}")
-    try:
-        await handle_giveaway_management()
-    except Exception as e:
-        print(f"Error in handle_giveaway_management task: {e}")
+    async def run_task(handler):
+        try:
+            await handler()
+        except Exception as e:
+            log.error(f"Error in event_manager task '{handler.__name__}': {e}", exc_info=True)
+
+    await asyncio.gather(
+        run_task(handle_weekly_recap),
+        run_task(handle_sotw_management),
+        run_task(handle_raffle_management),
+        run_task(handle_bingo_management),
+        run_task(handle_giveaway_management)
+    )
 
 async def handle_weekly_recap():
     now = datetime.now(timezone.utc)
@@ -594,114 +502,74 @@ async def handle_weekly_recap():
                 embed.set_footer(text=f"Recap for the week ending {now.strftime('%B %d, %Y')}")
                 await recap_channel.send(embed=embed)
 
-def _manage_sotw_sync():
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    now = datetime.now(timezone.utc)
-    cursor.execute("SELECT * FROM active_competitions WHERE ends_at < NOW() + interval '7 days'")
-    competitions = cursor.fetchall()
-    actions = {"reminders": [], "award_winners": []}
-    for comp in competitions:
-        ends_at = comp['ends_at']; starts_at = comp['starts_at']
-        if now > ends_at and not comp['winners_awarded']:
-            actions['award_winners'].append(comp)
-            cursor.execute("UPDATE active_competitions SET winners_awarded = TRUE WHERE id = %s", (comp['id'],))
-        elif not comp['final_ping_sent'] and (ends_at - now) <= timedelta(hours=1) and now < ends_at:
-            actions['reminders'].append({"type": "final", "comp": comp})
-            cursor.execute("UPDATE active_competitions SET final_ping_sent = TRUE WHERE id = %s", (comp['id'],))
-        elif not comp['midway_ping_sent'] and now >= starts_at + ((ends_at - starts_at) / 2) and now < ends_at:
-            actions['reminders'].append({"type": "midway", "comp": comp})
-            cursor.execute("UPDATE active_competitions SET midway_ping_sent = TRUE WHERE id = %s", (comp['id'],))
-    conn.commit()
-    cursor.close(); conn.close()
-    return actions
-
 async def handle_sotw_management():
     sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
     if not sotw_channel: return
-    actions = await run_in_executor(_manage_sotw_sync)
-    for reminder in actions['reminders']:
-        comp = reminder['comp']
-        if reminder['type'] == 'final':
-            await sotw_channel.send(content="@everyone", embed=discord.Embed(title="⏳ Final Hour!", description=f"The **{comp['title']}** competition ends in less than an hour!", color=discord.Color.red(), url=f"https://wiseoldman.net/competitions/{comp['id']}"))
-        elif reminder['type'] == 'midway':
-            await sotw_channel.send(embed=discord.Embed(title="½ Midway Point Reached!", description=f"The **{comp['title']}** competition is halfway through!", color=discord.Color.yellow(), url=f"https://wiseoldman.net/competitions/{comp['id']}"))
-    for comp in actions['award_winners']:
-        details_url = f"https://api.wiseoldman.net/v2/competitions/{comp['id']}"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(details_url) as response:
-                    if response.status == 200:
-                        comp_data = await response.json()
-                        for i, participant in enumerate(comp_data.get('participations', [])[:3]):
-                            await award_sotw_winner_points(participant, i, comp['title'])
-        except Exception as e:
-            print(f"Error awarding SOTW winners for comp {comp['id']}: {e}")
+    
+    async with bot.db_pool.acquire() as conn:
+        now = datetime.now(timezone.utc)
+        competitions = await conn.fetch("SELECT * FROM active_competitions WHERE ends_at < NOW() + interval '7 days'")
+        
+        for comp in competitions:
+            ends_at, starts_at = comp['ends_at'], comp['starts_at']
+            if now > ends_at and not comp['winners_awarded']:
+                await conn.execute("UPDATE active_competitions SET winners_awarded = TRUE WHERE id = $1", comp['id'])
+                asyncio.create_task(award_sotw_winners_for_comp(comp))
 
-def _get_discord_id_sync(osrs_name):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT discord_id FROM user_links WHERE osrs_name = %s", (osrs_name,))
-    user_data = cursor.fetchone()
-    conn.close()
-    return user_data[0] if user_data else None
+            elif not comp['final_ping_sent'] and (ends_at - now) <= timedelta(hours=1) and now < ends_at:
+                await conn.execute("UPDATE active_competitions SET final_ping_sent = TRUE WHERE id = $1", comp['id'])
+                await sotw_channel.send(content="@everyone", embed=discord.Embed(title="⏳ Final Hour!", description=f"The **{comp['title']}** competition ends in less than an hour!", color=discord.Color.red(), url=f"https://wiseoldman.net/competitions/{comp['id']}"))
+
+            elif not comp['midway_ping_sent'] and now >= starts_at + ((ends_at - starts_at) / 2) and now < ends_at:
+                await conn.execute("UPDATE active_competitions SET midway_ping_sent = TRUE WHERE id = $1", comp['id'])
+                await sotw_channel.send(embed=discord.Embed(title="½ Midway Point Reached!", description=f"The **{comp['title']}** competition is halfway through!", color=discord.Color.yellow(), url=f"https://wiseoldman.net/competitions/{comp['id']}"))
+
+async def award_sotw_winners_for_comp(comp):
+    details_url = f"https://api.wiseoldman.net/v2/competitions/{comp['id']}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(details_url) as response:
+                if response.status == 200:
+                    comp_data = await response.json()
+                    for i, participant in enumerate(comp_data.get('participations', [])[:3]):
+                        await award_sotw_winner_points(participant, i, comp['title'])
+    except Exception as e:
+        log.error(f"Error awarding SOTW winners for comp {comp['id']}: {e}", exc_info=True)
 
 async def award_sotw_winner_points(participant, rank, title):
     osrs_name = participant['player']['displayName']
-    discord_id = await run_in_executor(_get_discord_id_sync, osrs_name)
+    discord_id = await bot.db_pool.fetchval("SELECT discord_id FROM user_links WHERE osrs_name = $1", osrs_name)
     if discord_id:
         member = bot.get_guild(DEBUG_GUILD_ID).get_member(discord_id)
         if member:
             point_values = [100, 50, 25]
             await award_points(member, point_values[rank], f"placing #{rank+1} in the {title} SOTW")
 
-def _manage_raffles_sync():
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    now = datetime.now(timezone.utc)
-    cursor.execute("SELECT * FROM raffles WHERE winner_id IS NULL")
-    active_raffles = cursor.fetchall()
-    actions = {"draw": [], "remind": []}
-    for raffle in active_raffles:
-        if now >= raffle['ends_at']:
-            actions['draw'].append(raffle['id'])
-        elif not raffle['final_ping_sent'] and (raffle['ends_at'] - now) <= timedelta(days=1):
-            actions['remind'].append(raffle)
-            cursor.execute("UPDATE raffles SET final_ping_sent = TRUE WHERE id = %s", (raffle['id'],))
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return actions
-
 async def handle_raffle_management():
     raffle_channel = bot.get_channel(RAFFLE_CHANNEL_ID)
     if not raffle_channel: return
-    actions = await run_in_executor(_manage_raffles_sync)
-    for raffle_id in actions['draw']:
-        await draw_raffle_winner(raffle_channel, raffle_id)
-    for raffle in actions['remind']:
-        embed = discord.Embed(title="🎟️ Raffle Ending Soon!", description=f"There are only **24 hours left** to enter the raffle for a **{raffle['prize']}**!", color=discord.Color.orange())
-        await raffle_channel.send(content="@everyone", embed=embed)
+    now = datetime.now(timezone.utc)
+    async with bot.db_pool.acquire() as conn:
+        raffles_to_draw = await conn.fetch("SELECT id FROM raffles WHERE winner_id IS NULL AND ends_at <= $1", now)
+        raffles_to_remind = await conn.fetch("SELECT * FROM raffles WHERE winner_id IS NULL AND final_ping_sent = FALSE AND ends_at - $1 <= interval '1 day'", now)
+        
+        for r in raffles_to_remind:
+            await conn.execute("UPDATE raffles SET final_ping_sent = TRUE WHERE id = $1", r['id'])
+            embed = discord.Embed(title="🎟️ Raffle Ending Soon!", description=f"There are only **24 hours left** to enter the raffle for a **{r['prize']}**!", color=discord.Color.orange())
+            await raffle_channel.send(content="@everyone", embed=embed)
 
-def _manage_bingo_sync():
-    return []
+    for r in raffles_to_draw:
+        asyncio.create_task(draw_raffle_winner(raffle_channel, r['id']))
+
 async def handle_bingo_management():
     pass
-
-def _manage_giveaways_sync():
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute("SELECT * FROM giveaways WHERE winner_id IS NULL AND ends_at <= NOW()")
-    ended_giveaways = cursor.fetchall()
-    conn.close()
-    return ended_giveaways
 
 async def handle_giveaway_management():
     giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
     if not giveaway_channel: return
-    ended_giveaways = await run_in_executor(_manage_giveaways_sync)
+    ended_giveaways = await bot.db_pool.fetch("SELECT * FROM giveaways WHERE winner_id IS NULL AND ends_at <= NOW()")
     for giveaway in ended_giveaways:
-        await draw_giveaway_winner(giveaway_channel, giveaway['id'])
+        asyncio.create_task(draw_giveaway_winner(giveaway_channel, giveaway['id']))
 
 # --- Web Server for Hosting ---
 async def handle_http(request):
@@ -716,7 +584,7 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     try:
         await site.start()
-        print(f"Web server started on port {port}")
+        log.info(f"Web server started on port {port}")
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()
@@ -724,12 +592,20 @@ async def start_web_server():
 # --- BOT EVENTS ---
 @bot.event
 async def on_ready():
-    print(f"{bot.user} is online and ready!")
-    await setup_database()
-    event_manager.start()
-    daily_event_summary.start()
-    bot.add_view(SubmissionView())
-    await bot.sync_commands()
+    try:
+        bot.db_pool = await asyncpg.create_pool(DATABASE_URL)
+        if bot.db_pool:
+            log.info("Successfully connected to the database.")
+            await setup_database()
+            event_manager.start()
+            daily_event_summary.start()
+            bot.add_view(SubmissionView())
+            await bot.sync_commands()
+            log.info(f"{bot.user} is online and ready!")
+        else:
+            log.error("Failed to create database connection pool.")
+    except Exception as e:
+        log.critical(f"An error occurred during bot startup: {e}", exc_info=True)
 
 @bot.event
 async def on_message(message):
@@ -745,7 +621,7 @@ async def on_message(message):
                 embed.set_footer(text=f"Guide for: {question}")
                 await message.reply(embed=embed)
             except Exception as e:
-                print(f"Error generating PVM guide: {e}")
+                log.error(f"Error generating PVM guide: {e}", exc_info=True)
                 await message.reply("Sorry, I couldn't fetch a guide for that right now.")
 
 # --- BOT COMMANDS ---
@@ -776,8 +652,8 @@ async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_da
         else:
             await ctx.edit(content="Error: SOTW Channel ID not configured correctly.")
     except Exception as e:
-        print(f"Error in /sotw start: {e}")
-        try: await ctx.edit(content="An unexpected error occurred while starting the SOTW.")
+        log.error(f"Error in /sotw start: {e}", exc_info=True)
+        try: await ctx.edit(content="An unexpected error occurred. Please check the logs.")
         except discord.NotFound: pass
 
 @sotw.command(name="poll", description="Start a poll to choose the next SOTW.")
@@ -796,8 +672,8 @@ async def poll(ctx: discord.ApplicationContext):
         else:
             await ctx.edit(content="Error: SOTW Channel ID not configured correctly.")
     except Exception as e:
-        print(f"Error in /sotw poll: {e}")
-        try: await ctx.edit(content="An unexpected error occurred while starting the poll.")
+        log.error(f"Error in /sotw poll: {e}", exc_info=True)
+        try: await ctx.edit(content="An unexpected error occurred. Please check the logs.")
         except discord.NotFound: pass
 
 @sotw.command(name="view", description="View the leaderboard for the current SOTW.")
@@ -827,8 +703,8 @@ async def view(ctx: discord.ApplicationContext):
         embed.set_footer(text=f"Competition ends"); embed.timestamp = end_dt
         await ctx.edit(embed=embed)
     except Exception as e:
-        print(f"Error in /sotw view: {e}")
-        try: await ctx.edit(content="An error occurred while fetching the SOTW leaderboard.")
+        log.error(f"Error in /sotw view: {e}", exc_info=True)
+        try: await ctx.edit(content="An unexpected error occurred. Please check the logs.")
         except discord.NotFound: pass
 
 raffle = bot.create_group("raffle", "Commands for managing raffles.")
@@ -843,13 +719,9 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
         embed = await generate_embed_from_prompt(prompt)
         if not embed:
             embed = discord.Embed(title="🎟️ A New Raffle has Begun!", description=f"A new raffle is underway for a **{prize}**!", color=15844367)
-        def _db_call(p, e):
-            conn = get_db_connection(); cursor = conn.cursor()
-            cursor.execute("INSERT INTO raffles (prize, ends_at) VALUES (%s, %s) RETURNING id", (p, e.isoformat()))
-            rid = cursor.fetchone()[0]
-            conn.commit(); cursor.close(); conn.close()
-            return rid
-        raffle_id = await run_in_executor(_db_call, prize, ends_at)
+        
+        raffle_id = await bot.db_pool.fetchval("INSERT INTO raffles (prize, ends_at) VALUES ($1, $2) RETURNING id", prize, ends_at)
+        
         embed.add_field(name="How to Enter", value="Use `/raffle enter` to get a ticket! (Max 10 per person)", inline=False)
         embed.add_field(name="Raffle Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
         embed.set_footer(text=f"Raffle ID: {raffle_id}")
@@ -861,7 +733,7 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
         else:
             await ctx.edit(content="Error: Raffle Channel ID not configured correctly.")
     except Exception as e:
-        print(f"Error in /raffle start: {e}")
+        log.error(f"Error in /raffle start: {e}", exc_info=True)
         try: await ctx.edit(content=f"An unexpected error occurred. Please check the logs.")
         except discord.NotFound: pass
 
@@ -869,55 +741,41 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
 async def enter_raffle(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
     try:
-        def _db_call(user_id):
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            raffle_data = cursor.fetchone()
+        async with bot.db_pool.acquire() as conn:
+            raffle_data = await conn.fetchrow("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
             if not raffle_data:
-                cursor.close(); conn.close(); return {"status": "no_raffle"}
-            raffle_id = raffle_data['id']
-            cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = %s AND raffle_id = %s AND source = 'self'", (user_id, raffle_id))
-            if cursor.fetchone()[0] >= 10:
-                cursor.close(); conn.close(); return {"status": "max_tickets"}
-            cursor.execute("INSERT INTO raffle_entries (user_id, source, raffle_id) VALUES (%s, 'self', %s)", (user_id, raffle_id))
-            conn.commit()
-            cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = %s AND raffle_id = %s", (user_id, raffle_id))
-            total_tickets = cursor.fetchone()[0]
-            cursor.close(); conn.close()
-            return {"status": "success", "prize": raffle_data['prize'], "total": total_tickets}
-        result = await run_in_executor(_db_call, ctx.author.id)
-        if result['status'] == 'no_raffle': await ctx.edit(content="There is no active raffle to enter right now.")
-        elif result['status'] == 'max_tickets': await ctx.edit(content="You have already claimed your maximum of 10 tickets for this raffle!")
-        elif result['status'] == 'success': await ctx.edit(content=f"You have successfully claimed a ticket for the **{result['prize']}** raffle! You now have a total of {result['total']} ticket(s).")
+                return await ctx.edit(content="There is no active raffle to enter right now.")
+            
+            count = await conn.fetchval("SELECT COUNT(*) FROM raffle_entries WHERE user_id = $1 AND raffle_id = $2 AND source = 'self'", ctx.author.id, raffle_data['id'])
+            if count >= 10:
+                return await ctx.edit(content="You have already claimed your maximum of 10 tickets for this raffle!")
+
+            await conn.execute("INSERT INTO raffle_entries (user_id, source, raffle_id) VALUES ($1, 'self', $2)", ctx.author.id, raffle_data['id'])
+            total_tickets = await conn.fetchval("SELECT COUNT(*) FROM raffle_entries WHERE user_id = $1 AND raffle_id = $2", ctx.author.id, raffle_data['id'])
+        
+        await ctx.edit(content=f"You have successfully claimed a ticket for the **{raffle_data['prize']}** raffle! You now have a total of {total_tickets} ticket(s).")
     except Exception as e:
-        print(f"Error in /raffle enter: {e}")
+        log.error(f"Error in /raffle enter: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while entering the raffle.")
         except discord.NotFound: pass
 
 @raffle.command(name="give_tickets", description="ADMIN: Give raffle tickets to a member.")
 @discord.default_permissions(manage_events=True)
-async def give_tickets(ctx: discord.ApplicationContext, member: discord.Option(discord.Member, "The member to give tickets to."), amount: discord.Option(int, "How many tickets to give.", min_value=1)):
+async def give_tickets(ctx: discord.ApplicationContext, member: discord.Member, amount: int):
     await ctx.defer(ephemeral=True)
     try:
-        def _db_call(member_id, amt):
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            raffle_data = cursor.fetchone()
-            if not raffle_data:
-                cursor.close(); conn.close(); return {"status": "no_raffle"}
-            raffle_id = raffle_data['id']
-            entries = [(raffle_id, member_id, 'admin') for _ in range(amt)]
-            cursor.executemany("INSERT INTO raffle_entries (raffle_id, user_id, source) VALUES (%s, %s, %s)", entries)
-            conn.commit()
-            cursor.execute("SELECT COUNT(*) FROM raffle_entries WHERE user_id = %s AND raffle_id = %s", (member_id, raffle_id))
-            total = cursor.fetchone()[0]
-            cursor.close(); conn.close()
-            return {"status": "success", "prize": raffle_data['prize'], "total": total}
-        result = await run_in_executor(_db_call, member.id, amount)
-        if result['status'] == 'no_raffle': await ctx.edit(content="There is no active raffle.")
-        elif result['status'] == 'success': await ctx.edit(content=f"Successfully gave {amount} ticket(s) to {member.display_name} for the '{result['prize']}' raffle. They now have {result['total']} ticket(s).")
+        async with bot.db_pool.acquire() as conn:
+            raffle_data = await conn.fetchrow("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
+            if not raffle_data: return await ctx.edit(content="There is no active raffle.")
+            
+            entries = [(raffle_data['id'], member.id, 'admin') for _ in range(amount)]
+            await conn.copy_records_to_table('raffle_entries', records=entries, columns=['raffle_id', 'user_id', 'source'])
+            
+            total = await conn.fetchval("SELECT COUNT(*) FROM raffle_entries WHERE user_id = $1 AND raffle_id = $2", member.id, raffle_data['id'])
+        
+        await ctx.edit(content=f"Successfully gave {amount} ticket(s) to {member.display_name} for the '{raffle_data['prize']}' raffle. They now have {total} ticket(s).")
     except Exception as e:
-        print(f"Error in /raffle give_tickets: {e}")
+        log.error(f"Error in /raffle give_tickets: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while giving tickets.")
         except discord.NotFound: pass
 
@@ -926,24 +784,19 @@ async def give_tickets(ctx: discord.ApplicationContext, member: discord.Option(d
 async def edit_tickets(ctx: discord.ApplicationContext, member: discord.Member, new_total: int):
     await ctx.defer(ephemeral=True)
     try:
-        def _db_call(member_id, new_tot):
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            raffle_data = cursor.fetchone()
-            if not raffle_data:
-                cursor.close(); conn.close(); return {"status": "no_raffle"}
-            raffle_id = raffle_data['id']
-            cursor.execute("DELETE FROM raffle_entries WHERE user_id = %s AND raffle_id = %s", (member_id, raffle_id))
-            if new_tot > 0:
-                entries = [(raffle_id, member_id, 'admin_edit') for _ in range(new_tot)]
-                cursor.executemany("INSERT INTO raffle_entries (raffle_id, user_id, source) VALUES (%s, %s, %s)", entries)
-            conn.commit(); cursor.close(); conn.close()
-            return {"status": "success", "prize": raffle_data['prize']}
-        result = await run_in_executor(_db_call, member.id, new_total)
-        if result['status'] == 'no_raffle': await ctx.edit(content="There is no active raffle.")
-        elif result['status'] == 'success': await ctx.edit(content=f"Successfully set {member.display_name}'s ticket count to {new_total} for the '{result['prize']}' raffle.")
+        async with bot.db_pool.acquire() as conn:
+            raffle_data = await conn.fetchrow("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
+            if not raffle_data: return await ctx.edit(content="There is no active raffle.")
+
+            async with conn.transaction():
+                await conn.execute("DELETE FROM raffle_entries WHERE user_id = $1 AND raffle_id = $2", member.id, raffle_data['id'])
+                if new_total > 0:
+                    entries = [(raffle_data['id'], member.id, 'admin_edit') for _ in range(new_total)]
+                    await conn.copy_records_to_table('raffle_entries', records=entries, columns=['raffle_id', 'user_id', 'source'])
+        
+        await ctx.edit(content=f"Successfully set {member.display_name}'s ticket count to {new_total} for the '{raffle_data['prize']}' raffle.")
     except Exception as e:
-        print(f"Error in /raffle edit_tickets: {e}")
+        log.error(f"Error in /raffle edit_tickets: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while editing tickets.")
         except discord.NotFound: pass
 
@@ -951,33 +804,26 @@ async def edit_tickets(ctx: discord.ApplicationContext, member: discord.Member, 
 async def view_tickets(ctx: discord.ApplicationContext):
     await ctx.defer()
     try:
-        def _db_call():
-            conn = get_db_connection(); cursor = conn.cursor()
-            cursor.execute("SELECT id, prize FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            raffle_data = cursor.fetchone()
-            if not raffle_data:
-                cursor.close(); conn.close(); return None
-            raffle_id, prize = raffle_data
-            cursor.execute("SELECT user_id, COUNT(user_id) FROM raffle_entries WHERE raffle_id = %s GROUP BY user_id ORDER BY COUNT(user_id) DESC", (raffle_id,))
-            entries = cursor.fetchall()
-            cursor.close(); conn.close()
-            return {"prize": prize, "entries": entries}
-        result = await run_in_executor(_db_call)
-        if not result:
+        raffle_data = await bot.db_pool.fetchrow("SELECT id, prize FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
+        if not raffle_data:
             return await ctx.edit(content="There is no active raffle.")
-        embed = discord.Embed(title=f"🎟️ Raffle Tickets for '{result['prize']}'", color=discord.Color.gold())
-        if not result['entries']:
+        
+        entries = await bot.db_pool.fetch("SELECT user_id, COUNT(user_id) as count FROM raffle_entries WHERE raffle_id = $1 GROUP BY user_id ORDER BY count DESC", raffle_data['id'])
+        
+        embed = discord.Embed(title=f"🎟️ Raffle Tickets for '{raffle_data['prize']}'", color=discord.Color.gold())
+        if not entries:
             embed.description = "No tickets have been given out yet."
         else:
             description_lines = []
-            for user_id, count in result['entries'][:20]:
-                member = ctx.guild.get_member(user_id)
-                member_name = member.display_name if member else f"User ID: {user_id}"
-                description_lines.append(f"**{member_name}**: {count} ticket(s)")
+            for entry in entries[:20]:
+                member = ctx.guild.get_member(entry['user_id'])
+                member_name = member.display_name if member else f"User ID: {entry['user_id']}"
+                description_lines.append(f"**{member_name}**: {entry['count']} ticket(s)")
             embed.description = "\n".join(description_lines)
+        
         await ctx.edit(embed=embed)
     except Exception as e:
-        print(f"Error in /raffle view_tickets: {e}")
+        log.error(f"Error in /raffle view_tickets: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while viewing tickets.")
         except discord.NotFound: pass
 
@@ -988,19 +834,15 @@ async def draw_now(ctx: discord.ApplicationContext):
     try:
         channel = bot.get_channel(RAFFLE_CHANNEL_ID)
         if not channel: return await ctx.edit(content="Error: Raffle channel not found.")
-        def _db_call():
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            raffle_data = cursor.fetchone()
-            cursor.close(); conn.close()
-            return raffle_data
-        raffle_data = await run_in_executor(_db_call)
+        
+        raffle_data = await bot.db_pool.fetchrow("SELECT * FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
         if not raffle_data:
             return await ctx.edit(content="There is no active raffle to draw.")
+        
         await draw_raffle_winner(channel, raffle_data['id'])
         await ctx.edit(content=f"Successfully triggered winner drawing.")
     except Exception as e:
-        print(f"Error in /raffle draw_now: {e}")
+        log.error(f"Error in /raffle draw_now: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while drawing the raffle.")
         except discord.NotFound: pass
 
@@ -1009,24 +851,17 @@ async def draw_now(ctx: discord.ApplicationContext):
 async def cancel_raffle(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
     try:
-        def _db_call():
-            conn = get_db_connection(); cursor = conn.cursor()
-            cursor.execute("SELECT id, prize FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            raffle_data = cursor.fetchone()
-            if not raffle_data:
-                cursor.close(); conn.close(); return None
-            raffle_id, prize = raffle_data
-            cursor.execute("DELETE FROM raffles WHERE id = %s", (raffle_id,))
-            conn.commit(); cursor.close(); conn.close()
-            return prize
-        prize = await run_in_executor(_db_call)
-        if not prize:
+        raffle_data = await bot.db_pool.fetchrow("SELECT id, prize FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
+        if not raffle_data:
             return await ctx.edit(content="There is no active raffle to cancel.")
+        
+        await bot.db_pool.execute("DELETE FROM raffles WHERE id = $1", raffle_data['id'])
+        
         channel = bot.get_channel(RAFFLE_CHANNEL_ID)
-        if channel: await channel.send(f"The raffle for **{prize}** has been cancelled by an admin.")
+        if channel: await channel.send(f"The raffle for **{raffle_data['prize']}** has been cancelled by an admin.")
         await ctx.edit(content="Raffle successfully cancelled.")
     except Exception as e:
-        print(f"Error in /raffle cancel: {e}")
+        log.error(f"Error in /raffle cancel: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while canceling the raffle.")
         except discord.NotFound: pass
 
@@ -1036,18 +871,13 @@ giveaway = bot.create_group("giveaway", "Commands for pick-a-number giveaways.")
 async def start_giveaway(ctx, prize: str, max_number: int, duration_days: float):
     await ctx.defer(ephemeral=True)
     try:
-        def _db_call(p, mn, ends):
-            conn = get_db_connection(); cursor = conn.cursor()
-            cursor.execute("SELECT id FROM giveaways WHERE ends_at > NOW()")
-            if cursor.fetchone():
-                cursor.close(); conn.close(); return None
-            cursor.execute("INSERT INTO giveaways (prize, ends_at, max_number) VALUES (%s, %s, %s)", (p, ends, mn))
-            conn.commit(); cursor.close(); conn.close()
-            return True
-        ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
-        success = await run_in_executor(_db_call, prize, max_number, ends_at)
-        if not success:
+        active_giveaway = await bot.db_pool.fetchval("SELECT id FROM giveaways WHERE ends_at > NOW()")
+        if active_giveaway:
             return await ctx.edit(content="There is already an active giveaway.")
+        
+        ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
+        await bot.db_pool.execute("INSERT INTO giveaways (prize, ends_at, max_number) VALUES ($1, $2, $3)", prize, ends_at, max_number)
+        
         duration_str = f"{int(duration_days)} day(s)" if duration_days >= 1 else f"{int(duration_days*24)} hours"
         prompt = f"Create a Discord embed JSON for a 'pick-a-number' giveaway. Prize: **{prize}**. Number range: 1 to **{max_number}**. Duration: **{duration_str}**."
         embed = await generate_embed_from_prompt(prompt)
@@ -1063,7 +893,7 @@ async def start_giveaway(ctx, prize: str, max_number: int, duration_days: float)
         else:
             await ctx.edit(content="Error: Giveaway channel not configured correctly.")
     except Exception as e:
-        print(f"Error in /giveaway start: {e}")
+        log.error(f"Error in /giveaway start: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while starting the giveaway.")
         except discord.NotFound: pass
 
@@ -1071,44 +901,34 @@ async def start_giveaway(ctx, prize: str, max_number: int, duration_days: float)
 async def enter_giveaway(ctx, number: discord.Option(int, required=False) = None):
     await ctx.defer(ephemeral=True)
     try:
-        def _db_call(user_id, num):
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM giveaways WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            giveaway_data = cursor.fetchone()
-            if not giveaway_data:
-                cursor.close(); conn.close(); return {"status": "no_giveaway"}
+        async with bot.db_pool.acquire() as conn:
+            giveaway_data = await conn.fetchrow("SELECT * FROM giveaways WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
+            if not giveaway_data: return await ctx.edit(content="There is no active giveaway.")
+            
             gid, max_num = giveaway_data['id'], giveaway_data['max_number']
-            if num is None:
-                cursor.execute("SELECT chosen_number FROM giveaway_entries WHERE giveaway_id = %s", (gid,))
-                taken = {r['chosen_number'] for r in cursor.fetchall()}
+            if number is None:
+                taken_recs = await conn.fetch("SELECT chosen_number FROM giveaway_entries WHERE giveaway_id = $1", gid)
+                taken = {r['chosen_number'] for r in taken_recs}
                 available = list(set(range(1, max_num + 1)) - taken)
-                if not available:
-                    cursor.close(); conn.close(); return {"status": "all_taken"}
-                num = random.choice(available)
-            if not (1 <= num <= max_num):
-                cursor.close(); conn.close(); return {"status": "invalid_number", "max": max_num}
+                if not available: return await ctx.edit(content="Sorry, all numbers have been taken!")
+                number = random.choice(available)
+            
+            if not (1 <= number <= max_num):
+                return await ctx.edit(content=f"Please pick a number between 1 and {max_num}.")
+            
             try:
-                cursor.execute("INSERT INTO giveaway_entries (giveaway_id, user_id, chosen_number) VALUES (%s, %s, %s)", (gid, user_id, num))
-                conn.commit()
-                return {"status": "success", "number": num}
-            except psycopg2.IntegrityError as e:
-                conn.rollback()
-                if 'chosen_number' in str(e): return {"status": "already_taken", "number": num}
-                if 'user_id' in str(e): return {"status": "already_entered"}
-                return {"status": "error"}
-            finally:
-                cursor.close(); conn.close()
-        result = await run_in_executor(_db_call, ctx.author.id, number)
-        if result['status'] == 'no_giveaway': await ctx.edit(content="There is no active giveaway.")
-        elif result['status'] == 'all_taken': await ctx.edit(content="Sorry, all numbers have been taken!")
-        elif result['status'] == 'invalid_number': await ctx.edit(content=f"Please pick a number between 1 and {result['max']}.")
-        elif result['status'] == 'already_taken': await ctx.edit(content=f"Sorry, the number **{result['number']}** is taken!")
-        elif result['status'] == 'already_entered': await ctx.edit(content="You have already entered this giveaway!")
-        elif result['status'] == 'success': await ctx.edit(content=f"Your entry for number **{result['number']}** is locked in. Good luck!")
-        else: await ctx.edit(content="An unexpected error occurred.")
+                await conn.execute("INSERT INTO giveaway_entries (giveaway_id, user_id, chosen_number) VALUES ($1, $2, $3)", gid, ctx.author.id, number)
+                await ctx.edit(content=f"Your entry for number **{number}** is locked in. Good luck!")
+            except asyncpg.UniqueViolationError as e:
+                if 'chosen_number' in e.constraint_name:
+                    await ctx.edit(content=f"Sorry, the number **{number}** is taken!")
+                elif 'user_id' in e.constraint_name:
+                    await ctx.edit(content="You have already entered this giveaway!")
+                else:
+                    raise
     except Exception as e:
-        print(f"Error in /giveaway enter: {e}")
-        try: await ctx.edit(content="An error occurred while entering the giveaway.")
+        log.error(f"Error in /giveaway enter: {e}", exc_info=True)
+        try: await ctx.edit(content="An unexpected error occurred.")
         except discord.NotFound: pass
 
 @giveaway.command(name="draw_now", description="ADMIN: Immediately ends the giveaway and draws a winner.")
@@ -1118,19 +938,15 @@ async def draw_now_giveaway(ctx):
     try:
         channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
         if not channel: return await ctx.edit(content="Error: Giveaway channel not found.")
-        def _db_call():
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM giveaways WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            data = cursor.fetchone()
-            cursor.close(); conn.close()
-            return data
-        giveaway_data = await run_in_executor(_db_call)
+        
+        giveaway_data = await bot.db_pool.fetchrow("SELECT * FROM giveaways WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
         if not giveaway_data:
             return await ctx.edit(content="There is no active giveaway to draw.")
+        
         await draw_giveaway_winner(channel, giveaway_data['id'])
         await ctx.edit(content=f"Successfully triggered winner drawing for the '{giveaway_data['prize']}' giveaway.")
     except Exception as e:
-        print(f"Error in /giveaway draw_now: {e}")
+        log.error(f"Error in /giveaway draw_now: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while drawing the giveaway.")
         except discord.NotFound: pass
 
@@ -1139,17 +955,11 @@ events = bot.create_group("events", "View all active clan events.")
 async def view_events(ctx):
     await ctx.defer()
     try:
-        def _db_call():
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at ASC")
-            comps = cursor.fetchall()
-            cursor.execute("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC")
-            raffs = cursor.fetchall()
-            cursor.execute("SELECT * FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-            bing = cursor.fetchone()
-            cursor.close(); conn.close()
-            return comps, raffs, bing
-        competitions, raffles, bingo = await run_in_executor(_db_call)
+        async with bot.db_pool.acquire() as conn:
+            competitions = await conn.fetch("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at ASC")
+            raffles = await conn.fetch("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC")
+            bingo = await conn.fetchrow("SELECT * FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
+        
         embed = discord.Embed(title="📅 Clan Event Status", description="Here's a look at all the events currently running.", color=discord.Color.blurple())
         if competitions:
             comp_info = "".join([f"**Title:** [{c['title']}](https://wiseoldman.net/competitions/{c['id']})\n**Ends:** <t:{int(c['ends_at'].timestamp())}:R>\n\n" for c in competitions])
@@ -1167,7 +977,7 @@ async def view_events(ctx):
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
         await ctx.edit(embed=embed)
     except Exception as e:
-        print(f"Error in /events view: {e}")
+        log.error(f"Error in /events view: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching events.")
         except discord.NotFound: pass
 
@@ -1181,14 +991,14 @@ async def start_bingo(ctx, duration_days: int):
         try:
             with open(TASKS_FILE, 'r') as f: all_tasks = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            return await ctx.edit(content=f"Error: `tasks.json` not found or is invalid.")
+            return await ctx.edit(content=f"Error: `{TASKS_FILE}` not found or is invalid.")
         tasks_by_difficulty = {"common": [], "uncommon": [], "rare": []}
         for task in all_tasks: tasks_by_difficulty.setdefault(task['difficulty'], []).append(task)
         board_composition = {"common": 15, "uncommon": 7, "rare": 3}
         board_tasks = []
         for difficulty, count in board_composition.items():
             if len(tasks_by_difficulty.get(difficulty, [])) < count:
-                return await ctx.edit(content=f"Error: Not enough '{difficulty}' tasks in `tasks.json`.")
+                return await ctx.edit(content=f"Error: Not enough '{difficulty}' tasks in `{TASKS_FILE}`.")
             board_tasks.extend(random.sample(tasks_by_difficulty[difficulty], count))
         if len(board_tasks) < 25:
             return await ctx.edit(content="Error: Not enough tasks in total to create a 25-slot board.")
@@ -1208,17 +1018,13 @@ async def start_bingo(ctx, duration_days: int):
         embed.add_field(name="Event Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
         embed.set_footer(text=f"Bingo started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
         message = await bingo_channel.send(embed=embed, file=file)
-        def _db_call(s, e, b, m):
-            conn = get_db_connection(); cursor = conn.cursor()
-            cursor.execute("INSERT INTO bingo_events (starts_at, ends_at, board_json, message_id) VALUES (%s, %s, %s, %s) RETURNING id", (s, e, b, m))
-            bid = cursor.fetchone()[0]
-            conn.commit(); cursor.close(); conn.close()
-            return bid
-        bingo_id = await run_in_executor(_db_call, datetime.now(timezone.utc), ends_at, json.dumps(board_tasks), message.id)
+        
+        bingo_id = await bot.db_pool.fetchval("INSERT INTO bingo_events (starts_at, ends_at, board_json, message_id) VALUES ($1, $2, $3, $4) RETURNING id", datetime.now(timezone.utc), ends_at, json.dumps(board_tasks), message.id)
+        
         await send_global_announcement("bingo_start", {"duration": duration_str}, message.jump_url)
         await ctx.edit(content=f"Bingo event #{bingo_id} created successfully!")
     except Exception as e:
-        print(f"Error in /bingo start: {e}")
+        log.error(f"Error in /bingo start: {e}", exc_info=True)
         try: await ctx.edit(content=f"An unexpected error occurred: {e}")
         except discord.NotFound: pass
 
@@ -1226,24 +1032,19 @@ async def start_bingo(ctx, duration_days: int):
 async def complete_task(ctx, task: str, proof: str):
     await ctx.defer(ephemeral=True)
     try:
-        def _db_call(uid, t, p):
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
-            event_data = cursor.fetchone()
-            if not event_data:
-                cursor.close(); conn.close(); return {"status": "no_bingo"}
-            bingo_id = event_data['id']
-            if t not in [tk['name'] for tk in json.loads(event_data['board_json'])]:
-                cursor.close(); conn.close(); return {"status": "not_on_board"}
-            cursor.execute("INSERT INTO bingo_submissions (user_id, task_name, proof_url, bingo_id) VALUES (%s, %s, %s, %s)", (uid, t, p, bingo_id))
-            conn.commit(); cursor.close(); conn.close()
-            return {"status": "success"}
-        result = await run_in_executor(_db_call, ctx.author.id, task, proof)
-        if result['status'] == 'no_bingo': await ctx.edit(content="There is no active bingo event.")
-        elif result['status'] == 'not_on_board': await ctx.edit(content="That task is not on the current bingo board.")
-        elif result['status'] == 'success': await ctx.edit(content="Your submission has been sent to the admins for review!")
+        async with bot.db_pool.acquire() as conn:
+            event_data = await conn.fetchrow("SELECT id, board_json FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
+            if not event_data: return await ctx.edit(content="There is no active bingo event.")
+            
+            board_tasks = json.loads(event_data['board_json'])
+            if task not in [t['name'] for t in board_tasks]:
+                return await ctx.edit(content="That task is not on the current bingo board.")
+            
+            await conn.execute("INSERT INTO bingo_submissions (user_id, task_name, proof_url, bingo_id) VALUES ($1, $2, $3, $4)", ctx.author.id, task, proof, event_data['id'])
+        
+        await ctx.edit(content="Your submission has been sent to the admins for review!")
     except Exception as e:
-        print(f"Error in /bingo complete: {e}")
+        log.error(f"Error in /bingo complete: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while submitting your task.")
         except discord.NotFound: pass
 
@@ -1252,13 +1053,7 @@ async def complete_task(ctx, task: str, proof: str):
 async def view_submissions(ctx):
     await ctx.defer(ephemeral=True)
     try:
-        def _db_call():
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM bingo_submissions WHERE status = 'pending'")
-            pending = cursor.fetchall()
-            cursor.close(); conn.close()
-            return pending
-        pending = await run_in_executor(_db_call)
+        pending = await bot.db_pool.fetch("SELECT * FROM bingo_submissions WHERE status = 'pending'")
         if not pending:
             return await ctx.edit(content="There are no pending bingo submissions.")
         await ctx.edit(content="Here are the pending submissions:")
@@ -1268,9 +1063,9 @@ async def view_submissions(ctx):
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
             embed.add_field(name="Proof", value=f"[Click to view]({sub['proof_url']})", inline=False)
             embed.set_footer(text=f"Submission ID: {sub['id']}")
-            await ctx.channel.send(embed=embed, view=SubmissionView(), ephemeral=True)
+            await ctx.channel.send(embed=embed, view=SubmissionView())
     except Exception as e:
-        print(f"Error in /bingo submissions: {e}")
+        log.error(f"Error in /bingo submissions: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching submissions.")
         except discord.NotFound: pass
 
@@ -1278,26 +1073,21 @@ async def view_submissions(ctx):
 async def view_board(ctx):
     await ctx.defer()
     try:
-        def _db_call():
-            conn = get_db_connection(); cursor = conn.cursor()
-            cursor.execute("SELECT message_id FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
-            data = cursor.fetchone()
-            cursor.close(); conn.close()
-            return data
-        event_data = await run_in_executor(_db_call)
-        if not event_data or not event_data[0]:
+        message_id = await bot.db_pool.fetchval("SELECT message_id FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
+        if not message_id:
             return await ctx.edit(content="There is no active bingo board to display.")
+        
         bingo_channel = bot.get_channel(BINGO_CHANNEL_ID)
         if bingo_channel:
             try:
-                message = await bingo_channel.fetch_message(event_data[0])
+                message = await bingo_channel.fetch_message(message_id)
                 await ctx.edit(content=f"Here is the current bingo board: {message.jump_url}")
             except discord.NotFound:
                 await ctx.edit(content="Could not find the original bingo board message.")
         else:
             await ctx.edit(content="Bingo channel not configured.")
     except Exception as e:
-        print(f"Error in /bingo board: {e}")
+        log.error(f"Error in /bingo board: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching the board.")
         except discord.NotFound: pass
 
@@ -1314,17 +1104,8 @@ async def announce(ctx, message: str, channel: discord.TextChannel, ping_everyon
     except discord.Forbidden:
         await ctx.edit(content="Error: I don't have permission to send messages in that channel.")
     except Exception as e:
-        print(f"Error in /admin announce: {e}")
+        log.error(f"Error in /admin announce: {e}", exc_info=True)
         await ctx.edit(content=f"An unexpected error occurred: {e}")
-
-def _get_balance_sync(member_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT points FROM clan_points WHERE discord_id = %s", (member_id,))
-    point_data = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return point_data[0] if point_data else 0
 
 @admin.command(name="manage_points", description="Add or remove Clan Points from a member.")
 @discord.default_permissions(manage_guild=True)
@@ -1334,16 +1115,13 @@ async def manage_points(ctx, member: discord.Member, action: str, amount: int, r
         if action == "add":
             await award_points(member, amount, reason)
         else: # remove
-            def _db_call(mid, amt):
-                conn = get_db_connection(); cursor = conn.cursor()
-                cursor.execute("INSERT INTO clan_points (discord_id, points) VALUES (%s, 0) ON CONFLICT (discord_id) DO NOTHING", (mid,))
-                cursor.execute("UPDATE clan_points SET points = GREATEST(0, points - %s) WHERE discord_id = %s", (amt, mid))
-                conn.commit(); cursor.close(); conn.close()
-            await run_in_executor(_db_call, member.id, amount)
-        new_balance = await run_in_executor(_get_balance_sync, member.id)
+            await bot.db_pool.execute("INSERT INTO clan_points (discord_id, points) VALUES ($1, 0) ON CONFLICT (discord_id) DO NOTHING", member.id)
+            await bot.db_pool.execute("UPDATE clan_points SET points = GREATEST(0, points - $1) WHERE discord_id = $2", amount, member.id)
+        
+        new_balance = await bot.db_pool.fetchval("SELECT points FROM clan_points WHERE discord_id = $1", member.id) or 0
         await ctx.edit(content=f"Successfully updated {member.display_name}'s points. Their new balance is {new_balance}.")
     except Exception as e:
-        print(f"Error in /admin manage_points: {e}")
+        log.error(f"Error in /admin manage_points: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while managing points.")
         except discord.NotFound: pass
 
@@ -1361,7 +1139,7 @@ async def award_sotw_winners(ctx, competition_id: int):
         awarded_to = []
         point_values = [100, 50, 25]
         for i, participant in enumerate(comp_data.get('participations', [])[:3]):
-            discord_id = await run_in_executor(_get_discord_id_sync, participant['player']['displayName'])
+            discord_id = await bot.db_pool.fetchval("SELECT discord_id FROM user_links WHERE osrs_name = $1", participant['player']['displayName'])
             if discord_id:
                 member = ctx.guild.get_member(discord_id)
                 if member:
@@ -1371,7 +1149,7 @@ async def award_sotw_winners(ctx, competition_id: int):
             return await ctx.edit(content="No winners could be found or linked for that competition.")
         await ctx.edit(content="Successfully awarded points to:\n" + "\n".join(awarded_to))
     except Exception as e:
-        print(f"Error in /admin award_sotw_winners: {e}")
+        log.error(f"Error in /admin award_sotw_winners: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while awarding points.")
         except discord.NotFound: pass
 
@@ -1392,7 +1170,7 @@ async def admin_guide(ctx):
         embed.set_footer(text="Just take it one step at a time. You got this!")
         await ctx.edit(embed=embed)
     except Exception as e:
-        print(f"Error in /admin guide: {e}")
+        log.error(f"Error in /admin guide: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching the guide.")
         except discord.NotFound: pass
 
@@ -1406,14 +1184,11 @@ async def link(ctx, username: str):
             async with session.get(url) as response:
                 if response.status != 200:
                     return await ctx.edit(content=f"Could not find '{username}' on the OSRS HiScores.")
-        def _db_call(uid, uname):
-            conn = get_db_connection(); cursor = conn.cursor()
-            cursor.execute("INSERT INTO user_links (discord_id, osrs_name) VALUES (%s, %s) ON CONFLICT (discord_id) DO UPDATE SET osrs_name = EXCLUDED.osrs_name", (uid, uname))
-            conn.commit(); cursor.close(); conn.close()
-        await run_in_executor(_db_call, ctx.author.id, username)
+        
+        await bot.db_pool.execute("INSERT INTO user_links (discord_id, osrs_name) VALUES ($1, $2) ON CONFLICT (discord_id) DO UPDATE SET osrs_name = EXCLUDED.osrs_name", ctx.author.id, username)
         await ctx.edit(content=f"Success! Your Discord account has been linked to the OSRS name: **{username}**.")
     except Exception as e:
-        print(f"Error in /osrs link: {e}")
+        log.error(f"Error in /osrs link: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while linking your account.")
         except discord.NotFound: pass
 
@@ -1422,10 +1197,10 @@ points = bot.create_group("points", "Commands related to Clan Points.")
 async def view_points(ctx):
     await ctx.defer(ephemeral=True)
     try:
-        balance = await run_in_executor(_get_balance_sync, ctx.author.id)
+        balance = await bot.db_pool.fetchval("SELECT points FROM clan_points WHERE discord_id = $1", ctx.author.id) or 0
         await ctx.edit(content=f"You currently have **{balance}** Clan Points.")
     except Exception as e:
-        print(f"Error in /points view: {e}")
+        log.error(f"Error in /points view: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching your points.")
         except discord.NotFound: pass
 
@@ -1433,27 +1208,21 @@ async def view_points(ctx):
 async def leaderboard(ctx):
     await ctx.defer()
     try:
-        def _db_call():
-            conn = get_db_connection(); cursor = conn.cursor()
-            cursor.execute("SELECT discord_id, points FROM clan_points ORDER BY points DESC LIMIT 10")
-            leaders = cursor.fetchall()
-            cursor.close(); conn.close()
-            return leaders
-        leaders = await run_in_executor(_db_call)
+        leaders = await bot.db_pool.fetch("SELECT discord_id, points FROM clan_points ORDER BY points DESC LIMIT 10")
         embed = discord.Embed(title="🏆 Clan Points Leaderboard 🏆", color=discord.Color.gold())
         if not leaders:
             embed.description = "No one has earned any points yet."
         else:
             desc_lines = []
-            for i, (user_id, pts) in enumerate(leaders):
+            for i, rec in enumerate(leaders):
                 rank = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
-                member = ctx.guild.get_member(user_id)
-                name = member.display_name if member else f"User ID: {user_id}"
-                desc_lines.append(f"{rank} **{name}**: {pts:,} points")
+                member = ctx.guild.get_member(rec['discord_id'])
+                name = member.display_name if member else f"User ID: {rec['discord_id']}"
+                desc_lines.append(f"{rank} **{name}**: {rec['points']:,} points")
             embed.description = "\n".join(desc_lines)
         await ctx.edit(embed=embed)
     except Exception as e:
-        print(f"Error in /points leaderboard: {e}")
+        log.error(f"Error in /points leaderboard: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching the leaderboard.")
         except discord.NotFound: pass
 
@@ -1493,7 +1262,7 @@ async def help(ctx):
         embed.set_footer(text="Let the games begin!")
         await ctx.edit(embed=embed)
     except Exception as e:
-        print(f"Error in /help: {e}")
+        log.error(f"Error in /help: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching the help command.")
         except discord.NotFound: pass
 
@@ -1505,13 +1274,13 @@ async def run_bot():
             await bot.start(TOKEN)
         except discord.errors.HTTPException as e:
             if e.status == 429:
-                print("BOT is being rate-limited by Discord. Retrying in 5 minutes...")
+                log.warning("BOT is being rate-limited by Discord. Retrying in 5 minutes...")
                 await asyncio.sleep(300)
             else:
-                print(f"An unexpected HTTP error occurred with the bot: {e}")
+                log.critical(f"An unexpected HTTP error occurred with the bot: {e}", exc_info=True)
                 break
         except Exception as e:
-            print(f"An unexpected error occurred while running the bot: {e}")
+            log.critical(f"An unexpected error occurred while running the bot: {e}", exc_info=True)
             break
 
 async def main():
@@ -1520,5 +1289,7 @@ async def main():
     await asyncio.gather(web_task, bot_task)
 
 if __name__ == "__main__":
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL environment variable is not set. The bot cannot start.")
     asyncio.run(main())
 
