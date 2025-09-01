@@ -53,6 +53,16 @@ bot.active_polls = {}
 
 # --- Command Groups ---
 admin = discord.SlashCommandGroup("admin", "Admin-only commands")
+<<<<<<< HEAD
+=======
+
+@admin.command(name="announce", description="Send a message as the bot to a specific channel.")
+async def announce(ctx: discord.ApplicationContext, channel: discord.Option(discord.TextChannel), message: str):
+    await channel.send(message)
+    await ctx.respond(f"Message sent to {channel.mention}", ephemeral=True)
+
+# Register the group
+>>>>>>> 95826b8c95e8ec6b8ca61fd5f4e3a9b73c3eede8
 bot.add_application_command(admin)
 
 
@@ -720,7 +730,10 @@ async def on_ready():
     daily_event_summary.start()
     bot.add_view(SubmissionView())
     await bot.sync_commands()
+<<<<<<< HEAD
 
+=======
+>>>>>>> 95826b8c95e8ec6b8ca61fd5f4e3a9b73c3eede8
 @bot.event
 async def on_message(message):
     if message.author.bot:
