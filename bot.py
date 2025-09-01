@@ -57,19 +57,6 @@ bot.active_polls = {}
 
 # --- Command Groups ---
 admin = discord.SlashCommandGroup("admin", "Admin-only commands")
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-
-@admin.command(name="announce", description="Send a message as the bot to a specific channel.")
-async def announce(ctx: discord.ApplicationContext, channel: discord.Option(discord.TextChannel), message: str):
-    await channel.send(message)
-    await ctx.respond(f"Message sent to {channel.mention}", ephemeral=True)
-
-# Register the group
->>>>>>> 95826b8c95e8ec6b8ca61fd5f4e3a9b73c3eede8
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 bot.add_application_command(admin)
 
 # --- Database & Threading Helpers ---
@@ -138,35 +125,6 @@ class SotwButton(discord.ui.Button):
 class FinishButton(discord.ui.Button):
     def __init__(self, label, custom_id): super().__init__(label=label, style=discord.ButtonStyle.danger, custom_id=custom_id)
     async def callback(self, interaction: discord.Interaction):
-<<<<<<< HEAD
-        if interaction.user.id != self.view.author.id: return await interaction.response.send_message("Only the poll starter can finish it.", ephemeral=True)
-        view = self.view
-        if not any(v for v in view.votes.values()): return await interaction.response.send_message("No votes cast yet.", ephemeral=True)
-        winner = max(view.votes, key=lambda k: len(view.votes[k])); await interaction.response.defer(ephemeral=True)
-        data, error = await create_competition(WOM_CLAN_ID, winner, 7)
-        if error: await interaction.followup.send(f"Poll finished, but failed to start for **{winner.capitalize()}**: {error}", ephemeral=True); return
-        
-        sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
-        if sotw_channel:
-            comp = data['competition']
-            prompt = f"Write a Discord embed JSON announcing a Skill of the Week competition for **{winner.capitalize()}**, lasting 7 days. Announce it as the winner of the clan poll."
-            embed = await generate_embed_from_prompt(prompt)
-            if not embed:
-                 embed = discord.Embed(title=f"⚔️ SOTW Started: {winner.capitalize()}! ⚔️", description=f"The clan has spoken! The grind for **{winner.capitalize()}** begins now!", color=5763719)
-            
-            start_dt = datetime.fromisoformat(comp['startsAt'].replace('Z', '+00:00')); end_dt = datetime.fromisoformat(comp['endsAt'].replace('Z', '+00:00'))
-            embed.url = f"https://wiseoldman.net/competitions/{comp['id']}"
-            embed.add_field(name="Start Time", value=f"<t:{int(start_dt.timestamp())}:F>", inline=True)
-            embed.add_field(name="End Time", value=f"<t:{int(end_dt.timestamp())}:F>", inline=True)
-            embed.set_footer(text=f"Competition started by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
-            sotw_message = await sotw_channel.send(embed=embed)
-            await send_global_announcement("sotw_start", {"skill": winner.capitalize(), "duration": "7 days"}, sotw_message.jump_url)
-            await interaction.followup.send("Competition created in the SOTW channel!", ephemeral=True)
-        
-        for item in view.children: item.disabled = True
-        await interaction.message.edit(view=view)
-        bot.active_polls.pop(interaction.guild.id, None)
-=======
         await interaction.response.defer(ephemeral=True)
         try:
             if interaction.user.id != self.view.author.id: return await interaction.followup.send("Only the poll starter can finish it.", ephemeral=True)
@@ -199,7 +157,6 @@ class FinishButton(discord.ui.Button):
         except Exception as e:
             log.error(f"Error in FinishButton callback: {e}", exc_info=True)
             await interaction.followup.send("An error occurred while finishing the poll.", ephemeral=True)
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 # --- Bingo Submission View ---
 class SubmissionView(discord.ui.View):
@@ -249,26 +206,10 @@ class SubmissionView(discord.ui.View):
 async def award_points(member: discord.Member, amount: int, reason: str):
     if not member or member.bot: return
     try:
-<<<<<<< HEAD
-        cursor.execute("INSERT INTO clan_points (discord_id, points) VALUES (%s, 0) ON CONFLICT (discord_id) DO NOTHING", (member.id,))
-        cursor.execute("UPDATE clan_points SET points = points + %s WHERE discord_id = %s RETURNING points", (amount, member.id))
-        new_balance = cursor.fetchone()[0]
-        conn.commit()
-    except Exception as e:
-        print(f"Database error in award_points: {e}")
-        conn.rollback()
-        return
-    finally:
-        cursor.close()
-        conn.close()
-
-    try:
-=======
         async with bot.db_pool.acquire() as conn:
             await conn.execute("INSERT INTO clan_points (discord_id, points) VALUES ($1, 0) ON CONFLICT (discord_id) DO NOTHING", member.id)
             new_balance = await conn.fetchval("UPDATE clan_points SET points = points + $1 WHERE discord_id = $2 RETURNING points", amount, member.id)
         
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         dm_embed = discord.Embed(
             title="🏆 Points Awarded!",
             description=f"You have been awarded **{amount} Clan Points** for *{reason}*! Clan Points are a measure of your dedication and can be used for rewards. Well done.",
@@ -300,13 +241,6 @@ async def create_competition(clan_id: str, skill: str, duration_days: int):
                     return None, f"API Error: Status {response.status}"
 
 async def generate_embed_from_prompt(prompt: str) -> discord.Embed | None:
-<<<<<<< HEAD
-    """
-    Generates a discord.Embed object by sending a prompt to the Gemini AI.
-    The AI is expected to return a valid Discord embed JSON.
-    """
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
     full_prompt = f"""
     You are TaskmasterGPT, the official announcer for an Old School RuneScape clan.
     Your tone is epic, engaging, and a little bit cheeky. You are the clan's ultimate hype man.
@@ -325,11 +259,7 @@ async def generate_embed_from_prompt(prompt: str) -> discord.Embed | None:
         ai_data = json.loads(clean_json_string)
         return discord.Embed.from_dict(ai_data)
     except Exception as e:
-<<<<<<< HEAD
-        print(f"An error occurred during Gemini embed generation: {e}")
-=======
         log.error(f"An error occurred during Gemini embed generation: {e}", exc_info=True)
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         return None
 
 async def draw_raffle_winner(channel: discord.TextChannel, raffle_id: int):
@@ -345,9 +275,6 @@ async def draw_raffle_winner(channel: discord.TextChannel, raffle_id: int):
                 await channel.send(f"The raffle for **{raffle_data['prize']}** has ended, but unfortunately, no one entered.")
                 return
 
-<<<<<<< HEAD
-        prompt = f"Create a Discord embed JSON announcing the winner of a raffle. The winner is {winner_user.mention} and they won **{prize}**. Congratulate them with epic flair."
-=======
             winner_record = random.choice(entries)
             winner_id = winner_record['user_id']
             await conn.execute("UPDATE raffles SET winner_id = $1 WHERE id = $2", winner_id, raffle_id)
@@ -356,16 +283,11 @@ async def draw_raffle_winner(channel: discord.TextChannel, raffle_id: int):
         
         winner_user = await bot.fetch_user(winner_id)
         prompt = f"Create a Discord embed JSON announcing the winner of a raffle. The winner is {winner_user.mention} and they won **{raffle_data['prize']}**. Congratulate them with epic flair."
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         embed = await generate_embed_from_prompt(prompt)
         if not embed:
             embed = discord.Embed(title="🎉 Raffle Winner Announcement! 🎉", description=f"Congratulations to {winner_user.mention}, you have won the raffle!", color=discord.Color.fuchsia())
         
-<<<<<<< HEAD
-        embed.add_field(name="Prize", value=f"**{prize}**", inline=False)
-=======
         embed.add_field(name="Prize", value=f"**{raffle_data['prize']}**", inline=False)
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         embed.add_field(name="Bonus Reward", value="You have also been awarded **50 Clan Points**!", inline=False)
         embed.set_footer(text="Thanks to everyone for participating!")
         embed.set_thumbnail(url=winner_user.display_avatar.url)
@@ -374,46 +296,6 @@ async def draw_raffle_winner(channel: discord.TextChannel, raffle_id: int):
         log.error(f"Error in draw_raffle_winner for ID {raffle_id}: {e}", exc_info=True)
 
 async def draw_giveaway_winner(channel: discord.TextChannel, giveaway_id: int):
-<<<<<<< HEAD
-    """Handles the logic for drawing a giveaway winner."""
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute("SELECT * FROM giveaways WHERE id = %s", (giveaway_id,))
-    giveaway_data = cursor.fetchone()
-    if not giveaway_data:
-        cursor.close(); conn.close()
-        return
-    
-    prize = giveaway_data['prize']
-    max_number = giveaway_data['max_number']
-    winning_number = random.randint(1, max_number)
-    
-    cursor.execute("SELECT user_id FROM giveaway_entries WHERE giveaway_id = %s AND chosen_number = %s", (giveaway_id, winning_number))
-    winner_data = cursor.fetchone()
-    
-    if winner_data:
-        winner_id = winner_data['user_id']
-        winner_user = await bot.fetch_user(winner_id)
-        prompt = f"Create a Discord embed JSON for a giveaway result. The prize was a **{prize}**. The winning number was **{winning_number}**, and {winner_user.mention} correctly guessed it! Congratulate them."
-        embed = await generate_embed_from_prompt(prompt)
-        if not embed:
-            embed = discord.Embed(title=f"🎉 Giveaway Results for {prize}! 🎉", description=f"Congratulations to {winner_user.mention}, who picked the lucky number!", color=discord.Color.dark_gold())
-        embed.set_thumbnail(url=winner_user.display_avatar.url)
-        await channel.send(content=f"Congratulations {winner_user.mention}!", embed=embed)
-        cursor.execute("UPDATE giveaways SET winner_id = %s, winning_number = %s WHERE id = %s", (winner_id, winning_number, giveaway_id))
-    else:
-        prompt = f"Create a Discord embed JSON for a giveaway result where nobody won. The prize was a **{prize}**. The winning number was **{winning_number}**, but nobody picked it. State that the prize remains in the clan vault."
-        embed = await generate_embed_from_prompt(prompt)
-        if not embed:
-            embed = discord.Embed(title=f"🎉 Giveaway Results for {prize}! 🎉", description="Unfortunately, nobody picked the winning number this time. The prize remains in the clan vault!", color=discord.Color.dark_gold())
-        await channel.send(embed=embed)
-        cursor.execute("UPDATE giveaways SET winning_number = %s WHERE id = %s", (winning_number, giveaway_id))
-        
-    embed.add_field(name="The Winning Number Was...", value=f"**{winning_number}**", inline=False)
-    conn.commit()
-    cursor.close()
-    conn.close()
-=======
     try:
         async with bot.db_pool.acquire() as conn:
             giveaway_data = await conn.fetchrow("SELECT * FROM giveaways WHERE id = $1", giveaway_id)
@@ -443,7 +325,6 @@ async def draw_giveaway_winner(channel: discord.TextChannel, giveaway_id: int):
                 if not embed:
                     embed = discord.Embed(title=f"🎉 Giveaway Results for {prize}! 🎉", description="Unfortunately, nobody picked the winning number this time. The prize remains in the clan vault!", color=discord.Color.dark_gold())
                 await channel.send(embed=embed)
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
             embed.add_field(name="The Winning Number Was...", value=f"**{winning_number}**", inline=False)
     except Exception as e:
@@ -454,24 +335,13 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
         width, height = 1000, 1000; background_color = (40, 26, 13)
         img = Image.new('RGB', (width, height), background_color)
         draw = ImageDraw.Draw(img)
-<<<<<<< HEAD
-        
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         try:
             title_font = ImageFont.truetype(BINGO_FONT_FILE, size=70)
             task_font = ImageFont.truetype(BINGO_FONT_FILE, size=22)
         except IOError:
-<<<<<<< HEAD
-            print(f"Warning: Font file '{BINGO_FONT_FILE}' not found. Falling back to default font.")
-            title_font = ImageFont.load_default()
-            task_font = ImageFont.load_default()
-
-=======
             log.warning(f"Font file '{BINGO_FONT_FILE}' not found. Falling back to default font.")
             title_font = ImageFont.load_default(); task_font = ImageFont.load_default()
         
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         draw.text((width/2, 60), "CLAN BINGO", font=title_font, fill=(255, 215, 0), anchor="ms")
         grid_size = 5; cell_size = 170; line_width = 4
         grid_start_x, grid_start_y = 75, 125
@@ -485,44 +355,18 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
             if i >= 25: break
             row, col = i // grid_size, i % grid_size
             cell_x, cell_y = grid_start_x + col * cell_size, grid_start_y + row * cell_size
-<<<<<<< HEAD
-            
-            if task['name'] in completed_tasks:
-                overlay = Image.new('RGBA', (cell_size - line_width, cell_size - line_width), (0, 255, 0, 90))
-                img.paste(overlay, (cell_x + line_width//2, cell_y + line_width//2), overlay)
-
-            text_x = cell_x + (cell_size / 2)
-            text_y = cell_y + (cell_size / 2)
-            task_name = task['name']
-            
-            lines = textwrap.wrap(task_name, width=15)
-            
-=======
             if task['name'] in completed_tasks:
                 overlay = Image.new('RGBA', (cell_size - line_width, cell_size - line_width), (0, 255, 0, 90))
                 img.paste(overlay, (cell_x + line_width//2, cell_y + line_width//2), overlay)
             
             lines = textwrap.wrap(task['name'], width=15)
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
             total_text_height = sum(task_font.getbbox(line)[3] for line in lines)
             current_y = (cell_y + (cell_size / 2)) - (total_text_height / 2)
             for line in lines:
                 line_width_bbox, line_height_bbox = draw.textbbox((0,0), line, font=task_font)[2:4]
-<<<<<<< HEAD
-                draw.text(
-                    (text_x - (line_width_bbox / 2), current_y),
-                    line,
-                    font=task_font,
-                    fill=(255, 255, 255),
-                    align="center"
-                )
-                current_y += line_height_bbox + 2
-
-=======
                 draw.text(((cell_x + (cell_size / 2)) - (line_width_bbox / 2), current_y), line, font=task_font, fill=(255, 255, 255), align="center")
                 current_y += line_height_bbox + 2
         
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         output_path = "bingo_board.png"; img.save(output_path)
         return output_path, None
     except Exception as e:
@@ -562,12 +406,6 @@ async def send_global_announcement(event_type: str, details: dict, message_url: 
     if not announcement_channel:
         log.error("Global announcements channel not found.")
         return
-<<<<<<< HEAD
-    
-    # This function is now simplified, it doesn't need to call the AI again
-    # The calling command will generate the main embed. We can create a simpler one here.
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
     if event_type == "sotw_start":
         title = f"⚔️ New SOTW: {details.get('skill', 'Unknown')}!"
         desc = f"A new Skill of the Week has begun! It will last for **{details.get('duration', 'a while')}**."
@@ -580,10 +418,6 @@ async def send_global_announcement(event_type: str, details: dict, message_url: 
     else:
         title = "🎉 New Event!"
         desc = "A new clan event has started!"
-<<<<<<< HEAD
-
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
     embed = discord.Embed(title=title, description=desc, color=discord.Color.blue())
     embed.url = message_url
     embed.add_field(name="Details", value=f"[Click here to view the event!]({message_url})")
@@ -591,64 +425,15 @@ async def send_global_announcement(event_type: str, details: dict, message_url: 
     await announcement_channel.send(content="@everyone", embed=embed)
 
 # --- TASKS ---
-<<<<<<< HEAD
-
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 daily_summary_time = time(hour=12, minute=0, tzinfo=timezone.utc)
 @tasks.loop(time=daily_summary_time)
 async def daily_event_summary():
     await bot.wait_until_ready()
-<<<<<<< HEAD
-    announcement_channel = bot.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
-    if not announcement_channel:
-        print("ERROR: Cannot post daily summary, announcements channel not found.")
-        return
-
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    
-    cursor.execute("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at ASC")
-    competitions = cursor.fetchall()
-    cursor.execute("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC")
-    raffles = cursor.fetchall()
-    cursor.execute("SELECT * FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-    bingo = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if not competitions and not raffles and not bingo:
-        print("No active events to summarize today.")
-        return
-
-    event_data_string = ""
-    if competitions:
-        event_data_string += "Skill of the Week Competitions:\n"
-        for comp in competitions:
-            event_data_string += f"- {comp['title']} (Ends <t:{int(comp['ends_at'].timestamp())}:R>)\n"
-    if raffles:
-        event_data_string += "\nRaffles:\n"
-        for raf in raffles:
-            event_data_string += f"- Prize: {raf['prize']} (Ends <t:{int(raf['ends_at'].timestamp())}:R>)\n"
-    if bingo:
-        event_data_string += "\nBingo Event:\n"
-        event_data_string += f"- A clan-wide bingo is active! (Ends <t:{int(bingo['ends_at'].timestamp())}:R>)\n"
-    
-    prompt = f"Create a Discord embed JSON for a daily summary of active clan events. Make it engaging. Here is the data:\n{event_data_string}"
-    embed = await generate_embed_from_prompt(prompt)
-    if not embed:
-        embed = discord.Embed(title="📅 Daily Clan Events Summary", description=event_data_string, color=10181046)
-
-    embed.set_footer(text="Good luck, have fun!")
-    embed.timestamp=datetime.now(timezone.utc)
-    await announcement_channel.send(embed=embed)
-=======
     try:
         announcement_channel = bot.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
         if not announcement_channel:
             log.error("Cannot post daily summary, announcements channel not found.")
             return
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
         async with bot.db_pool.acquire() as conn:
             competitions = await conn.fetch("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at ASC")
@@ -721,112 +506,6 @@ async def handle_sotw_management():
     sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
     if not sotw_channel: return
     
-<<<<<<< HEAD
-    # --- Weekly Recap Check ---
-    try:
-        recap_channel = bot.get_channel(RECAP_CHANNEL_ID)
-        if recap_channel and now.weekday() == 6 and now.hour == 19 and now.minute < 5:
-            url = f"https://api.wiseoldman.net/v2/groups/{WOM_CLAN_ID}/gained?period=week&metric=overall"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if not data:
-                             embed = discord.Embed(title="📈 Weekly Recap", description="It seems the clan was quiet this week, with no XP gains to report. Let's pick up the pace for next week!", color=discord.Color.blue())
-                        else:
-                            data_summary = ""
-                            for i, player in enumerate(data[:10]): data_summary += f"{i+1}. {player['player']['displayName']}: {player.get('gained', 0):,} XP\n"
-                            prompt = f"Create a Discord embed JSON for our clan's weekly recap. Announce the top 3 with extra flair. Here is the data:\n{data_summary}"
-                            embed = await generate_embed_from_prompt(prompt)
-                            if not embed:
-                                embed = discord.Embed(title="📈 Weekly Recap", description="Here are the top performers:\n" + data_summary, color=discord.Color.blue())
-                        
-                        embed.set_footer(text=f"Recap for the week ending {now.strftime('%B %d, %Y')}")
-                        await recap_channel.send(embed=embed)
-    except Exception as e:
-        print(f"ERROR in event_manager (Recap): {e}")
-
-    # --- SOTW Management ---
-    try:
-        sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
-        if sotw_channel:
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM active_competitions WHERE ends_at < NOW() + interval '7 days'")
-            competitions = cursor.fetchall()
-            
-            for comp in competitions:
-                ends_at = comp['ends_at']; starts_at = comp['starts_at']
-                
-                if now > ends_at and not comp['winners_awarded']:
-                    details_url = f"https://api.wiseoldman.net/v2/competitions/{comp['id']}"
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(details_url) as response:
-                            if response.status == 200:
-                                comp_data = await response.json()
-                                point_values = [100, 50, 25]
-                                for i, participant in enumerate(comp_data.get('participations', [])[:3]):
-                                    osrs_name = participant['player']['displayName']
-                                    cursor.execute("SELECT discord_id FROM user_links WHERE osrs_name = %s", (osrs_name,))
-                                    user_data = cursor.fetchone()
-                                    if user_data:
-                                        member = bot.get_guild(DEBUG_GUILD_ID).get_member(user_data['discord_id'])
-                                        if member:
-                                            await award_points(member, point_values[i], f"placing #{i+1} in the {comp['title']} SOTW")
-                    cursor.execute("UPDATE active_competitions SET winners_awarded = TRUE WHERE id = %s", (comp['id'],))
-                
-                elif not comp['final_ping_sent'] and (ends_at - now) <= timedelta(hours=1) and now < ends_at:
-                    await sotw_channel.send(content="@everyone", embed=discord.Embed(title="⏳ Final Hour!", description=f"The **{comp['title']}** competition ends in less than an hour!", color=discord.Color.red(), url=f"https://wiseoldman.net/competitions/{comp['id']}"))
-                    cursor.execute("UPDATE active_competitions SET final_ping_sent = TRUE WHERE id = %s", (comp['id'],))
-                elif not comp['midway_ping_sent'] and now >= starts_at + ((ends_at - starts_at) / 2) and now < ends_at:
-                    await sotw_channel.send(embed=discord.Embed(title="½ Midway Point Reached!", description=f"The **{comp['title']}** competition is halfway through!", color=discord.Color.yellow(), url=f"https://wiseoldman.net/competitions/{comp['id']}"))
-                    cursor.execute("UPDATE active_competitions SET midway_ping_sent = TRUE WHERE id = %s", (comp['id'],))
-            
-            conn.commit(); cursor.close(); conn.close()
-    except Exception as e:
-        print(f"ERROR in event_manager (SOTW): {e}")
-    
-    # --- Raffle Drawing & Reminders ---
-    try:
-        raffle_channel = bot.get_channel(RAFFLE_CHANNEL_ID)
-        if raffle_channel:
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM raffles WHERE winner_id IS NULL")
-            active_raffles = cursor.fetchall()
-            for raffle in active_raffles:
-                ends_at = raffle['ends_at']
-                if now >= ends_at:
-                    await draw_raffle_winner(raffle_channel, raffle['id'])
-                elif not raffle['final_ping_sent'] and (ends_at - now) <= timedelta(days=1):
-                    embed = discord.Embed(title="🎟️ Raffle Ending Soon!", description=f"There are only **24 hours left** to enter the raffle for a **{raffle['prize']}**!", color=discord.Color.orange())
-                    await raffle_channel.send(content="@everyone", embed=embed)
-                    cursor.execute("UPDATE raffles SET final_ping_sent = TRUE WHERE id = %s", (raffle['id'],))
-            conn.commit(); cursor.close(); conn.close()
-    except Exception as e:
-        print(f"ERROR in event_manager (Raffles): {e}")
-
-    # --- Bingo Reminders ---
-    try:
-        bingo_channel = bot.get_channel(BINGO_CHANNEL_ID)
-        if bingo_channel:
-            conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute("SELECT * FROM bingo_events WHERE ends_at > NOW()")
-            active_bingo = cursor.fetchone() # Assuming only one bingo at a time
-            if active_bingo:
-                ends_at = active_bingo['ends_at']; starts_at = active_bingo['starts_at']
-                if not active_bingo['final_ping_sent'] and (ends_at - now) <= timedelta(days=1):
-                    embed = discord.Embed(title="🧩 Bingo Ending Soon!", description="There's only **24 hours left** to complete your bingo tasks! Submit your entries now!", color=discord.Color.orange())
-                    await bingo_channel.send(content="@everyone", embed=embed)
-                    cursor.execute("UPDATE bingo_events SET final_ping_sent = TRUE WHERE id = %s", (active_bingo['id'],))
-                elif not active_bingo['midway_ping_sent'] and now >= starts_at + ((ends_at - starts_at) / 2):
-                    embed = discord.Embed(title="½ Bingo Midway Point!", description="The clan bingo is halfway through! Keep up the great work and let's see those completed boards!", color=discord.Color.yellow())
-                    await bingo_channel.send(embed=embed)
-                    cursor.execute("UPDATE bingo_events SET midway_ping_sent = TRUE WHERE id = %s", (active_bingo['id'],))
-            conn.commit(); cursor.close(); conn.close()
-    except Exception as e:
-        print(f"ERROR in event_manager (Bingo): {e}")
-
-    # --- Giveaway Drawing ---
-=======
     async with bot.db_pool.acquire() as conn:
         now = datetime.now(timezone.utc)
         competitions = await conn.fetch("SELECT * FROM active_competitions WHERE ends_at < NOW() + interval '7 days'")
@@ -847,7 +526,6 @@ async def handle_sotw_management():
 
 async def award_sotw_winners_for_comp(comp):
     details_url = f"https://api.wiseoldman.net/v2/competitions/{comp['id']}"
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(details_url) as response:
@@ -914,25 +592,6 @@ async def start_web_server():
 # --- BOT EVENTS ---
 @bot.event
 async def on_ready():
-<<<<<<< HEAD
-    print(f"{bot.user} is online and ready!")
-    setup_database()
-    event_manager.start()
-    daily_event_summary.start()
-    bot.add_view(SubmissionView())
-    await bot.sync_commands()
-<<<<<<< HEAD
-
-=======
->>>>>>> 95826b8c95e8ec6b8ca61fd5f4e3a9b73c3eede8
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-
-    trigger_phrases = ["what gear for", "setup for", "inventory for"]
-    
-=======
     try:
         bot.db_pool = await asyncpg.create_pool(DATABASE_URL)
         if bot.db_pool:
@@ -952,34 +611,18 @@ async def on_message(message):
 async def on_message(message):
     if message.author.bot: return
     trigger_phrases = ["what gear for", "setup for", "inventory for"]
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
     if any(message.content.lower().startswith(phrase) for phrase in trigger_phrases):
         question = message.content
         async with message.channel.typing():
             prompt = f"You are an expert Old School RuneScape (OSRS) player. Respond to the following query with a gear/inventory setup formatted for Discord: \"{question}\""
             try:
-<<<<<<< HEAD
-                response = await ai_model.generate_content_async(prompt)
-                
-                embed = discord.Embed(
-                    title=f"Gear & Inventory Guide",
-                    description=response.text,
-                    color=discord.Color.blue()
-                )
-=======
                 response = await run_in_executor(ai_model.generate_content, prompt)
                 embed = discord.Embed(title="Gear & Inventory Guide", description=response.text, color=discord.Color.blue())
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
                 embed.set_footer(text=f"Guide for: {question}")
                 await message.reply(embed=embed)
             except Exception as e:
-<<<<<<< HEAD
-                print(f"Error generating PVM guide: {e}")
-                await message.reply("Sorry, I couldn't fetch a guide for that right now. Please try again later.")
-=======
                 log.error(f"Error generating PVM guide: {e}", exc_info=True)
                 await message.reply("Sorry, I couldn't fetch a guide for that right now.")
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 # --- BOT COMMANDS ---
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
@@ -998,33 +641,20 @@ async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_da
             embed = await generate_embed_from_prompt(prompt)
             if not embed:
                 embed = discord.Embed(title=f"⚔️ SOTW Started: {skill.capitalize()}! ⚔️", description=f"The great grind for **{skill.capitalize()}** begins now!", color=5763719)
-<<<<<<< HEAD
-            
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
             start_dt = datetime.fromisoformat(comp['startsAt'].replace('Z', '+00:00')); end_dt = datetime.fromisoformat(comp['endsAt'].replace('Z', '+00:00'))
             embed.url = f"https://wiseoldman.net/competitions/{comp['id']}"
             embed.add_field(name="Start Time", value=f"<t:{int(start_dt.timestamp())}:F>", inline=True)
             embed.add_field(name="End Time", value=f"<t:{int(end_dt.timestamp())}:F>", inline=True)
             embed.set_footer(text=f"Competition started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
-<<<<<<< HEAD
-            
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
             sotw_message = await sotw_channel.send(embed=embed)
             await send_global_announcement("sotw_start", {"skill": skill.capitalize(), "duration": f"{duration_days} days"}, sotw_message.jump_url)
             await ctx.edit(content=f"SOTW for {skill.capitalize()} created! [Jump]({sotw_message.jump_url})")
         else:
             await ctx.edit(content="Error: SOTW Channel ID not configured correctly.")
     except Exception as e:
-<<<<<<< HEAD
-        print(f"Error in /sotw start: {e}")
-        await ctx.edit(content="An unexpected error occurred while starting the SOTW.")
-=======
         log.error(f"Error in /sotw start: {e}", exc_info=True)
         try: await ctx.edit(content="An unexpected error occurred. Please check the logs.")
         except discord.NotFound: pass
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 @sotw.command(name="poll", description="Start a poll to choose the next SOTW.")
 @discord.default_permissions(manage_events=True)
@@ -1085,26 +715,13 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
     try:
         ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
         duration_str = f"{int(duration_days)} day(s)" if duration_days >= 1 else f"{int(duration_days*24)} hours"
-<<<<<<< HEAD
-
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         prompt = f"Create a Discord embed JSON for a raffle starting now. Prize: **{prize}**. Duration: **{duration_str}**."
         embed = await generate_embed_from_prompt(prompt)
         if not embed:
             embed = discord.Embed(title="🎟️ A New Raffle has Begun!", description=f"A new raffle is underway for a **{prize}**!", color=15844367)
-<<<<<<< HEAD
-
-        conn = get_db_connection(); cursor = conn.cursor()
-        cursor.execute("INSERT INTO raffles (prize, ends_at) VALUES (%s, %s) RETURNING id", (prize, ends_at.isoformat()))
-        raffle_id = cursor.fetchone()[0]
-        conn.commit(); cursor.close(); conn.close()
-        
-=======
         
         raffle_id = await bot.db_pool.fetchval("INSERT INTO raffles (prize, ends_at) VALUES ($1, $2) RETURNING id", prize, ends_at)
         
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         embed.add_field(name="How to Enter", value="Use `/raffle enter` to get a ticket! (Max 10 per person)", inline=False)
         embed.add_field(name="Raffle Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
         embed.set_footer(text=f"Raffle ID: {raffle_id}")
@@ -1116,15 +733,9 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
         else:
             await ctx.edit(content="Error: Raffle Channel ID not configured correctly.")
     except Exception as e:
-<<<<<<< HEAD
-        print(f"Error in /raffle start: {e}")
-        await ctx.edit(content=f"An unexpected error occurred. Please check the logs.")
-
-=======
         log.error(f"Error in /raffle start: {e}", exc_info=True)
         try: await ctx.edit(content=f"An unexpected error occurred. Please check the logs.")
         except discord.NotFound: pass
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 @raffle.command(name="enter", description="Get one ticket for the current raffle (max 10).")
 async def enter_raffle(ctx: discord.ApplicationContext):
@@ -1192,31 +803,6 @@ async def edit_tickets(ctx: discord.ApplicationContext, member: discord.Member, 
 @raffle.command(name="view_tickets", description="View the current ticket count for all participants.")
 async def view_tickets(ctx: discord.ApplicationContext):
     await ctx.defer()
-<<<<<<< HEAD
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT id, prize FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-    raffle_data = cursor.fetchone()
-    if not raffle_data:
-        cursor.close(); conn.close(); return await ctx.respond("There is no active raffle.")
-    
-    raffle_id, raffle_prize = raffle_data
-    cursor.execute("SELECT user_id, COUNT(user_id) FROM raffle_entries WHERE raffle_id = %s GROUP BY user_id ORDER BY COUNT(user_id) DESC", (raffle_id,))
-    entries = cursor.fetchall()
-    cursor.close(); conn.close()
-
-    embed = discord.Embed(title=f"🎟️ Raffle Tickets for '{raffle_prize}'", color=discord.Color.gold())
-    if not entries:
-        embed.description = "No tickets have been given out yet."
-    else:
-        description_lines = []
-        for user_id, count in entries[:20]:
-            member = ctx.guild.get_member(user_id)
-            member_name = member.display_name if member else f"User ID: {user_id}"
-            description_lines.append(f"**{member_name}**: {count} ticket(s)")
-        embed.description = "\n".join(description_lines)
-    
-    await ctx.respond(embed=embed)
-=======
     try:
         raffle_data = await bot.db_pool.fetchrow("SELECT id, prize FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
         if not raffle_data:
@@ -1240,7 +826,6 @@ async def view_tickets(ctx: discord.ApplicationContext):
         log.error(f"Error in /raffle view_tickets: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while viewing tickets.")
         except discord.NotFound: pass
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 @raffle.command(name="draw_now", description="ADMIN: Immediately ends the raffle and draws a winner.")
 @discord.default_permissions(manage_events=True)
@@ -1265,22 +850,6 @@ async def draw_now(ctx: discord.ApplicationContext):
 @discord.default_permissions(manage_events=True)
 async def cancel_raffle(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
-<<<<<<< HEAD
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT * FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-    raffle_data = cursor.fetchone()
-    if not raffle_data: cursor.close(); conn.close(); return await ctx.respond("There is no active raffle to cancel.")
-    
-    raffle_id = raffle_data[0]
-    prize = raffle_data[1]
-    
-    cursor.execute("DELETE FROM raffles WHERE id = %s", (raffle_id,)) # CASCADE should handle entries
-    conn.commit(); cursor.close(); conn.close()
-    
-    channel = bot.get_channel(RAFFLE_CHANNEL_ID)
-    if channel: await channel.send(f"The raffle for **{prize}** has been cancelled by an admin.")
-    await ctx.respond("Raffle successfully cancelled.")
-=======
     try:
         raffle_data = await bot.db_pool.fetchrow("SELECT id, prize FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
         if not raffle_data:
@@ -1295,43 +864,12 @@ async def cancel_raffle(ctx: discord.ApplicationContext):
         log.error(f"Error in /raffle cancel: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while canceling the raffle.")
         except discord.NotFound: pass
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 giveaway = bot.create_group("giveaway", "Commands for pick-a-number giveaways.")
 @giveaway.command(name="start", description="ADMIN: Start a new pick-a-number giveaway.")
 @discord.default_permissions(manage_events=True)
 async def start_giveaway(ctx, prize: str, max_number: int, duration_days: float):
     await ctx.defer(ephemeral=True)
-<<<<<<< HEAD
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM giveaways WHERE ends_at > NOW()")
-    if cursor.fetchone():
-        cursor.close(); conn.close()
-        return await ctx.respond("There is already an active giveaway.", ephemeral=True)
-
-    ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
-    cursor.execute("INSERT INTO giveaways (prize, ends_at, max_number) VALUES (%s, %s, %s)", (prize, ends_at, max_number))
-    conn.commit(); cursor.close(); conn.close()
-
-    duration_str = f"{int(duration_days)} day(s)" if duration_days >= 1 else f"{int(duration_days*24)} hours"
-    prompt = f"Create a Discord embed JSON for a 'pick-a-number' giveaway. Prize: **{prize}**. Number range: 1 to **{max_number}**. Duration: **{duration_str}**."
-    embed = await generate_embed_from_prompt(prompt)
-    if not embed:
-        embed = discord.Embed(title="🎉 A New Giveaway Has Started! 🎉", description=f"We're giving away a **{prize}**!", color=discord.Color.dark_magenta())
-
-    embed.add_field(name="How to Enter", value=f"Pick a number between 1 and {max_number} using `/giveaway enter`.", inline=False)
-    embed.add_field(name="Giveaway Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
-    embed.set_footer(text="First come, first served for each number. Good luck!")
-    
-    giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
-    if giveaway_channel:
-        await giveaway_channel.send(embed=embed)
-        await ctx.respond("Giveaway created successfully!", ephemeral=True)
-    else:
-        await ctx.respond("Error: Giveaway channel not configured correctly.", ephemeral=True)
-
-=======
     try:
         active_giveaway = await bot.db_pool.fetchval("SELECT id FROM giveaways WHERE ends_at > NOW()")
         if active_giveaway:
@@ -1358,42 +896,10 @@ async def start_giveaway(ctx, prize: str, max_number: int, duration_days: float)
         log.error(f"Error in /giveaway start: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while starting the giveaway.")
         except discord.NotFound: pass
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 @giveaway.command(name="enter", description="Enter the current giveaway by picking a number.")
 async def enter_giveaway(ctx, number: discord.Option(int, required=False) = None):
     await ctx.defer(ephemeral=True)
-<<<<<<< HEAD
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute("SELECT * FROM giveaways WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-    giveaway_data = cursor.fetchone()
-
-    if not giveaway_data:
-        cursor.close(); conn.close()
-        return await ctx.respond("There is no active giveaway to enter right now.", ephemeral=True)
-
-    giveaway_id = giveaway_data['id']
-    max_number = giveaway_data['max_number']
-
-    if number is None:
-        cursor.execute("SELECT chosen_number FROM giveaway_entries WHERE giveaway_id = %s", (giveaway_id,))
-        taken_numbers = {row['chosen_number'] for row in cursor.fetchall()}
-        all_possible_numbers = set(range(1, max_number + 1))
-        available_numbers = list(all_possible_numbers - taken_numbers)
-
-        if not available_numbers:
-            cursor.close(); conn.close()
-            return await ctx.respond("Sorry, all numbers for this giveaway have been taken!", ephemeral=True)
-        
-        number = random.choice(available_numbers)
-
-    if not (1 <= number <= max_number):
-        cursor.close(); conn.close()
-        return await ctx.respond(f"That's not a valid number! Please pick a number between 1 and {max_number}.", ephemeral=True)
-
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
     try:
         async with bot.db_pool.acquire() as conn:
             giveaway_data = await conn.fetchrow("SELECT * FROM giveaways WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
@@ -1448,49 +954,6 @@ events = bot.create_group("events", "View all active clan events.")
 @events.command(name="view", description="Shows all currently active competitions, raffles, and bingo events.")
 async def view_events(ctx):
     await ctx.defer()
-<<<<<<< HEAD
-    conn = get_db_connection(); cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    
-    cursor.execute("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at ASC")
-    competitions = cursor.fetchall()
-    cursor.execute("SELECT * FROM raffles WHERE ends_at > NOW() ORDER BY ends_at ASC")
-    raffles = cursor.fetchall()
-    cursor.execute("SELECT * FROM bingo_events WHERE ends_at > NOW() ORDER BY ends_at ASC LIMIT 1")
-    bingo = cursor.fetchone()
-    
-    cursor.close(); conn.close()
-    
-    embed = discord.Embed(title="📅 Clan Event Status", description="Here's a look at all the events currently running.", color=discord.Color.blurple())
-    
-    if competitions:
-        comp_info = ""
-        for comp in competitions:
-            comp_ends_dt = comp['ends_at']
-            comp_info += f"**Title:** [{comp['title']}](https://wiseoldman.net/competitions/{comp['id']})\n**Ends:** <t:{int(comp_ends_dt.timestamp())}:R>\n\n"
-        embed.add_field(name="⚔️ Active Competitions", value=comp_info, inline=False)
-    else:
-        embed.add_field(name="⚔️ Active Competitions", value="There are no SOTW competitions currently running.", inline=False)
-        
-    if raffles:
-        raffle_info = ""
-        for raf in raffles:
-            raf_ends_dt = raf['ends_at']
-            raffle_info += f"**Prize:** {raf['prize']}\n**Ends:** <t:{int(raf_ends_dt.timestamp())}:R>\n\n"
-        embed.add_field(name="🎟️ Active Raffles", value=raffle_info, inline=False)
-    else:
-        embed.add_field(name="🎟️ Active Raffles", value="There are no raffles currently running.", inline=False)
-
-    if bingo:
-        bingo_ends_dt = bingo['ends_at']
-        bingo_url = f"https://discord.com/channels/{ctx.guild.id}/{BINGO_CHANNEL_ID}/{bingo['message_id']}"
-        bingo_info = f"A clan-wide bingo is underway!\n**[Click here to see the board!]({bingo_url})**\nEnds: <t:{int(bingo_ends_dt.timestamp())}:R>"
-        embed.add_field(name="🧩 Active Bingo", value=bingo_info, inline=False)
-    else:
-        embed.add_field(name="🧩 Active Bingo", value="There is no bingo event currently running.", inline=False)
-        
-    embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
-    await ctx.respond(embed=embed)
-=======
     try:
         async with bot.db_pool.acquire() as conn:
             competitions = await conn.fetch("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at ASC")
@@ -1517,23 +980,10 @@ async def view_events(ctx):
         log.error(f"Error in /events view: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching events.")
         except discord.NotFound: pass
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 bingo = bot.create_group("bingo", "Commands for clan bingo events.")
 @bingo.command(name="start", description="Start a new bingo event.")
 @discord.default_permissions(manage_events=True)
-<<<<<<< HEAD
-async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Option(int, "How many days the bingo event will last.")):
-    await ctx.defer(ephemeral=True)
-    try:
-        await ctx.edit(content="The Taskmaster is forging a new challenge... This may take a moment.")
-        
-        try:
-            with open(TASKS_FILE, 'r') as f: all_tasks = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return await ctx.edit(content=f"Error: `tasks.json` not found or is invalid.")
-        
-=======
 async def start_bingo(ctx, duration_days: int):
     await ctx.defer(ephemeral=True)
     try:
@@ -1542,7 +992,6 @@ async def start_bingo(ctx, duration_days: int):
             with open(TASKS_FILE, 'r') as f: all_tasks = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return await ctx.edit(content=f"Error: `{TASKS_FILE}` not found or is invalid.")
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         tasks_by_difficulty = {"common": [], "uncommon": [], "rare": []}
         for task in all_tasks: tasks_by_difficulty.setdefault(task['difficulty'], []).append(task)
         board_composition = {"common": 15, "uncommon": 7, "rare": 3}
@@ -1563,10 +1012,6 @@ async def start_bingo(ctx, duration_days: int):
         embed = await generate_embed_from_prompt(prompt)
         if not embed:
             embed = discord.Embed(title="🧩 A New Clan Bingo Has Started! 🧩", description=f"A fresh board of challenges awaits for the next **{duration_str}**!", color=11027200)
-<<<<<<< HEAD
-
-=======
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
         file = discord.File(image_path, filename="bingo_board.png")
         embed.set_image(url="attachment://bingo_board.png")
         ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
@@ -1579,14 +1024,9 @@ async def start_bingo(ctx, duration_days: int):
         await send_global_announcement("bingo_start", {"duration": duration_str}, message.jump_url)
         await ctx.edit(content=f"Bingo event #{bingo_id} created successfully!")
     except Exception as e:
-<<<<<<< HEAD
-        print(f"Error in /bingo start: {e}")
-        await ctx.edit(content=f"An unexpected error occurred: {e}")
-=======
         log.error(f"Error in /bingo start: {e}", exc_info=True)
         try: await ctx.edit(content=f"An unexpected error occurred: {e}")
         except discord.NotFound: pass
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 @bingo.command(name="complete", description="Submit a task for bingo completion.")
 async def complete_task(ctx, task: str, proof: str):
@@ -1717,66 +1157,6 @@ async def award_sotw_winners(ctx, competition_id: int):
 @discord.default_permissions(manage_guild=True)
 async def admin_guide(ctx):
     await ctx.defer(ephemeral=True)
-<<<<<<< HEAD
-
-    embed = discord.Embed(
-        title="👑 Admin Command Guide 👑",
-        description="Here’s how to use the admin commands to run clan events. Don't worry, it's easy!",
-        color=discord.Color.gold()
-    )
-
-    sotw_guide = """
-    `1. /sotw poll`
-    **What it does:** Starts a vote for the next Skill of the Week.
-    **How to use:** Just type `/sotw poll`. The bot will pick 6 random skills and make a poll in the SOTW channel.
-    
-    `2. /sotw start`
-    **What it does:** Manually starts a competition without a poll.
-    **How to use:** Type `/sotw start`. It will ask you for the `skill` (e.g., Mining) and `duration_days` (usually 7).
-    """
-    embed.add_field(name="⚔️ Skill of the Week (SOTW)", value=textwrap.dedent(sotw_guide), inline=False)
-
-    raffle_guide = """
-    `1. /raffle start`
-    **What it does:** Starts a new raffle for a prize.
-    **How to use:** Type `/raffle start`. It will ask for the `prize` (e.g., "Dragon Warhammer") and `duration_days`.
-    
-    `2. /raffle give_tickets`
-    **What it does:** Gives tickets to a player (e.g., if they paid you in-game).
-    **How to use:** Type `/raffle give_tickets`. It will ask for the `member` (pick them from the list) and `amount` of tickets.
-    
-    `3. /raffle draw_now`
-    **What it does:** Ends the current raffle and picks a winner immediately.
-    **How to use:** Just type `/raffle draw_now`. Use this if you want to end a raffle early.
-    """
-    embed.add_field(name="🎟️ Raffles", value=textwrap.dedent(raffle_guide), inline=False)
-
-    bingo_guide = """
-    `1. /bingo start`
-    **What it does:** Starts a new bingo game for the whole clan.
-    **How to use:** Type `/bingo start`. It will ask for the `duration_days` (e.g., 14 or 30). The bot does the rest!
-    
-    `2. /bingo submissions`
-    **What it does:** Shows you all the bingo tasks players have submitted for approval.
-    **How to use:** Type `/bingo submissions`. The bot will show you the submissions with "Approve" and "Deny" buttons.
-    """
-    embed.add_field(name="🧩 Bingo", value=textwrap.dedent(bingo_guide), inline=False)
-    
-    other_guide = """
-    `1. /admin announce`
-    **What it does:** Sends a message as the bot.
-    **How to use:** Type `/admin announce`. It will ask for the `message`, the `channel` to send it to, and if you want to `ping_everyone`.
-    
-    `2. /admin manage_points`
-    **What it does:** Lets you give or take away Clan Points from someone.
-    **How to use:** Type `/admin manage_points`. It will ask for the `member`, the `action` (add or remove), the `amount`, and a `reason`.
-    """
-    embed.add_field(name="⚙️ Other Tools", value=textwrap.dedent(other_guide), inline=False)
-
-    embed.set_footer(text="Just take it one step at a time. You got this!")
-    await ctx.respond(embed=embed, ephemeral=True)
-
-=======
     try:
         embed = discord.Embed(title="👑 Admin Command Guide 👑", description="Here’s how to use the admin commands to run clan events.", color=discord.Color.gold())
         sotw_guide = "`1. /sotw poll`\n**What it does:** Starts a vote for the next Skill of the Week.\n\n`2. /sotw start`\n**What it does:** Manually starts a competition without a poll."
@@ -1793,7 +1173,6 @@ async def admin_guide(ctx):
         log.error(f"Error in /admin guide: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching the guide.")
         except discord.NotFound: pass
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 osrs = bot.create_group("osrs", "Commands related to your OSRS account.")
 @osrs.command(name="link", description="Link your Discord account to your OSRS username.")
@@ -1828,26 +1207,6 @@ async def view_points(ctx):
 @points.command(name="leaderboard", description="View the Clan Points leaderboard.")
 async def leaderboard(ctx):
     await ctx.defer()
-<<<<<<< HEAD
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT discord_id, points FROM clan_points ORDER BY points DESC LIMIT 10")
-    leaders = cursor.fetchall()
-    cursor.close(); conn.close()
-
-    embed = discord.Embed(title="🏆 Clan Points Leaderboard 🏆", color=discord.Color.gold())
-    if not leaders:
-        embed.description = "No one has earned any points yet."
-    else:
-        description_lines = []
-        for i, (user_id, points) in enumerate(leaders):
-            rank_emoji = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
-            member = ctx.guild.get_member(user_id)
-            member_name = member.display_name if member else f"User ID: {user_id}"
-            description_lines.append(f"{rank_emoji} **{member_name}**: {points:,} points")
-        embed.description = "\n".join(description_lines)
-    
-    await ctx.respond(embed=embed)
-=======
     try:
         leaders = await bot.db_pool.fetch("SELECT discord_id, points FROM clan_points ORDER BY points DESC LIMIT 10")
         embed = discord.Embed(title="🏆 Clan Points Leaderboard 🏆", color=discord.Color.gold())
@@ -1866,7 +1225,6 @@ async def leaderboard(ctx):
         log.error(f"Error in /points leaderboard: {e}", exc_info=True)
         try: await ctx.edit(content="An error occurred while fetching the leaderboard.")
         except discord.NotFound: pass
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
 
 @bot.slash_command(name="help", description="Shows a list of all available commands.")
 async def help(ctx):
@@ -1916,15 +1274,6 @@ async def run_bot():
             await bot.start(TOKEN)
         except discord.errors.HTTPException as e:
             if e.status == 429:
-<<<<<<< HEAD
-                print("BOT is being rate-limited by Discord. Retrying in 5 minutes...")
-                await asyncio.sleep(300)
-            else:
-                print(f"An unexpected HTTP error occurred with the bot: {e}")
-                break
-        except Exception as e:
-            print(f"An unexpected error occurred while running the bot: {e}")
-=======
                 log.warning("BOT is being rate-limited by Discord. Retrying in 5 minutes...")
                 await asyncio.sleep(300)
             else:
@@ -1932,7 +1281,6 @@ async def run_bot():
                 break
         except Exception as e:
             log.critical(f"An unexpected error occurred while running the bot: {e}", exc_info=True)
->>>>>>> f62b937425fa7e43cc0e8cb2bb336805e1916b08
             break
 
 async def main():
