@@ -17,6 +17,7 @@ import google.generativeai as genai
 from io import BytesIO
 from functools import partial
 import logging
+import sys
 
 # --- Basic Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
@@ -28,23 +29,33 @@ TOKEN = os.getenv('TOKEN')
 WOM_CLAN_ID = os.getenv('WOM_CLAN_ID')
 WOM_VERIFICATION_CODE = os.getenv('WOM_VERIFICATION_CODE')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-DEBUG_GUILD_ID = int(os.getenv('DEBUG_GUILD_ID'))
+DEBUG_GUILD_ID_STR = os.getenv('DEBUG_GUILD_ID')
 DATABASE_URL = os.getenv('DATABASE_URL')
 TASKS_FILE = "tasks.json"
 BINGO_FONT_FILE = "arial.ttf" 
 
-# Channel IDs
-SOTW_CHANNEL_ID = int(os.getenv('SOTW_CHANNEL_ID'))
-BINGO_CHANNEL_ID = int(os.getenv('BINGO_CHANNEL_ID'))
-RAFFLE_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID'))
-GIVEAWAY_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID'))
-RECAP_CHANNEL_ID = int(os.getenv('RECAP_CHANNEL_ID'))
-ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID'))
-PVM_EVENT_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID'))
+# --- Environment Variable Validation ---
+if not all([TOKEN, WOM_CLAN_ID, WOM_VERIFICATION_CODE, GEMINI_API_KEY, DEBUG_GUILD_ID_STR, DATABASE_URL]):
+    log.critical("CRITICAL: One or more environment variables are missing. Please check your Render dashboard.")
+    # We don't exit here, so the diagnostics command can still run and report the issue.
+    
+DEBUG_GUILD_ID = int(DEBUG_GUILD_ID_STR) if DEBUG_GUILD_ID_STR else None
+
+# Channel IDs - Using .get() to avoid crashing if one is missing
+SOTW_CHANNEL_ID = int(os.getenv('SOTW_CHANNEL_ID', 0))
+BINGO_CHANNEL_ID = int(os.getenv('BINGO_CHANNEL_ID', 0))
+RAFFLE_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID', 0))
+GIVEAWAY_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID', 0)) # Uses raffle channel
+RECAP_CHANNEL_ID = int(os.getenv('RECAP_CHANNEL_ID', 0))
+ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID', 0))
+PVM_EVENT_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID', 0))
 
 # Configure the Gemini AI
-genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-1.0-pro')
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    ai_model = genai.GenerativeModel('gemini-1.0-pro')
+else:
+    ai_model = None
 
 # Define WOM skill metrics & Bot Intents
 WOM_SKILLS = ["overall", "attack", "defence", "strength", "hitpoints", "ranged", "prayer", "magic", "cooking", "woodcutting", "fletching", "fishing", "firemaking", "crafting", "smithing", "mining", "herlore", "agility", "thieving", "slayer", "farming", "runecraft", "hunter", "construction"]
@@ -67,27 +78,23 @@ async def run_in_executor(func, *args, **kwargs):
 
 async def setup_database():
     """Sets up the necessary database tables if they don't exist using asyncpg."""
-    async with bot.db_pool.acquire() as conn:
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS active_competitions (id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE)""")
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT, final_ping_sent BOOLEAN DEFAULT FALSE)""")
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS raffle_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, raffle_id INTEGER REFERENCES raffles(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, source TEXT DEFAULT 'self')""")
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, board_json TEXT, message_id BIGINT, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE)""")
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS bingo_submissions (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id BIGINT, task_name TEXT, proof_url TEXT, status TEXT DEFAULT 'pending', bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE)""")
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS bingo_completed_tiles (bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE, task_name TEXT, PRIMARY KEY (bingo_id, task_name))""")
-        await conn.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
-        await conn.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS giveaways (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT NOT NULL, ends_at TIMESTAMPTZ NOT NULL, max_number INTEGER NOT NULL, winner_id BIGINT, winning_number INTEGER)""")
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS giveaway_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, giveaway_id INTEGER REFERENCES giveaways(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, chosen_number INTEGER NOT NULL, UNIQUE (giveaway_id, chosen_number), UNIQUE (giveaway_id, user_id))""")
-        await conn.execute("CREATE TABLE IF NOT EXISTS pvm_guides (boss_name TEXT PRIMARY KEY, guide_text TEXT NOT NULL)")
-    log.info("Database setup checked/completed.")
+    try:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute("""CREATE TABLE IF NOT EXISTS active_competitions (id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT, final_ping_sent BOOLEAN DEFAULT FALSE)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS raffle_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, raffle_id INTEGER REFERENCES raffles(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, source TEXT DEFAULT 'self')""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, board_json TEXT, message_id BIGINT, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_submissions (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id BIGINT, task_name TEXT, proof_url TEXT, status TEXT DEFAULT 'pending', bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_completed_tiles (bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE, task_name TEXT, PRIMARY KEY (bingo_id, task_name))""")
+            await conn.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
+            await conn.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS giveaways (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT NOT NULL, ends_at TIMESTAMPTZ NOT NULL, max_number INTEGER NOT NULL, winner_id BIGINT, winning_number INTEGER)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS giveaway_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, giveaway_id INTEGER REFERENCES giveaways(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, chosen_number INTEGER NOT NULL, UNIQUE (giveaway_id, chosen_number), UNIQUE (giveaway_id, user_id))""")
+            await conn.execute("CREATE TABLE IF NOT EXISTS pvm_guides (boss_name TEXT PRIMARY KEY, guide_text TEXT NOT NULL)")
+        log.info("Database setup checked/completed.")
+    except Exception as e:
+        log.critical(f"DATABASE SETUP FAILED: {e}", exc_info=True)
+
 
 # --- SOTW Poll View ---
 class SotwPollView(discord.ui.View):
@@ -241,6 +248,9 @@ async def create_competition(clan_id: str, skill: str, duration_days: int):
                     return None, f"API Error: Status {response.status}"
 
 async def generate_embed_from_prompt(prompt: str) -> discord.Embed | None:
+    if not ai_model:
+        log.warning("Gemini AI model not configured. Skipping prompt generation.")
+        return None
     full_prompt = f"""
     You are TaskmasterGPT, the official announcer for an Old School RuneScape clan.
     Your tone is epic, engaging, and a little bit cheeky. You are the clan's ultimate hype man.
@@ -593,17 +603,19 @@ async def start_web_server():
 @bot.event
 async def on_ready():
     try:
-        bot.db_pool = await asyncpg.create_pool(DATABASE_URL)
-        if bot.db_pool:
-            log.info("Successfully connected to the database.")
-            await setup_database()
-            event_manager.start()
-            daily_event_summary.start()
-            bot.add_view(SubmissionView())
-            await bot.sync_commands()
-            log.info(f"{bot.user} is online and ready!")
+        if DATABASE_URL:
+            bot.db_pool = await asyncpg.create_pool(DATABASE_URL)
+            if bot.db_pool:
+                log.info("Successfully connected to the database.")
+                await setup_database()
         else:
-            log.error("Failed to create database connection pool.")
+            log.critical("DATABASE_URL is not set. Database features will be disabled.")
+
+        event_manager.start()
+        daily_event_summary.start()
+        bot.add_view(SubmissionView())
+        await bot.sync_commands()
+        log.info(f"{bot.user} is online and ready!")
     except Exception as e:
         log.critical(f"An error occurred during bot startup: {e}", exc_info=True)
 
@@ -623,6 +635,74 @@ async def on_message(message):
             except Exception as e:
                 log.error(f"Error generating PVM guide: {e}", exc_info=True)
                 await message.reply("Sorry, I couldn't fetch a guide for that right now.")
+
+# --- DIAGNOSTIC COMMANDS ---
+@bot.slash_command(name="ping", description="A simple command to check if the bot is responsive.")
+async def ping(ctx: discord.ApplicationContext):
+    await ctx.defer(ephemeral=True)
+    await ctx.edit(content="Pong! The bot is online and responding to commands.")
+
+@admin.command(name="diagnostics", description="Runs a full system check to ensure the bot is configured correctly.")
+async def diagnostics(ctx: discord.ApplicationContext):
+    await ctx.defer(ephemeral=True)
+    
+    results = ["**--- Bot Diagnostics Report ---**"]
+    
+    # 1. Check Environment Variables
+    results.append("\n**Environment Variables:**")
+    env_vars = ['TOKEN', 'WOM_CLAN_ID', 'WOM_VERIFICATION_CODE', 'GEMINI_API_KEY', 'DEBUG_GUILD_ID', 'DATABASE_URL']
+    all_vars_set = True
+    for var in env_vars:
+        if os.getenv(var):
+            results.append(f"✅ `{var}` is set.")
+        else:
+            results.append(f"❌ `{var}` is **MISSING**.")
+            all_vars_set = False
+            
+    # 2. Check Database Connection
+    results.append("\n**Database Connection:**")
+    if bot.db_pool and all_vars_set:
+        try:
+            async with bot.db_pool.acquire() as conn:
+                val = await conn.fetchval('SELECT 1')
+                if val == 1:
+                    results.append("✅ Successfully connected to the database and executed a query.")
+                else:
+                    results.append("❌ Connected to DB, but query failed.")
+        except Exception as e:
+            results.append(f"❌ **FAILED** to connect to the database. Error: `{e}`")
+    else:
+        results.append("❌ Database pool is not available (likely because DATABASE_URL is missing).")
+
+    # 3. Check Gemini API
+    results.append("\n**Gemini AI API:**")
+    if ai_model:
+        try:
+            test_embed = await generate_embed_from_prompt("test")
+            if test_embed:
+                results.append("✅ Successfully received a response from the Gemini API.")
+            else:
+                results.append("❌ **FAILED** to get a valid response from Gemini API.")
+        except Exception as e:
+            results.append(f"❌ **FAILED** to communicate with Gemini API. Error: `{e}`")
+    else:
+        results.append("❌ Gemini API key is missing, so the model was not initialized.")
+        
+    # 4. Check File Access
+    results.append("\n**File Access:**")
+    try:
+        with open(TASKS_FILE, 'r') as f:
+            json.load(f)
+        results.append(f"✅ Successfully read and parsed `{TASKS_FILE}`.")
+    except FileNotFoundError:
+        results.append(f"❌ **FAILED** to find the file `{TASKS_FILE}`.")
+    except json.JSONDecodeError:
+        results.append(f"❌ **FAILED** to parse `{TASKS_FILE}`. It may be corrupt.")
+    except Exception as e:
+        results.append(f"❌ An unknown error occurred while reading `{TASKS_FILE}`. Error: `{e}`")
+
+    await ctx.edit(content="\n".join(results))
+
 
 # --- BOT COMMANDS ---
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
@@ -1289,8 +1369,5 @@ async def main():
     await asyncio.gather(web_task, bot_task)
 
 if __name__ == "__main__":
-    if not DATABASE_URL:
-        raise Exception("DATABASE_URL environment variable is not set. The bot cannot start.")
     asyncio.run(main())
-
 
