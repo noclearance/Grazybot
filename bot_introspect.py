@@ -4,16 +4,6 @@ from bot import bot  # import your bot instance
 
 async def main():
     await bot.wait_until_ready()
-    
-    print("=== BOT COMMANDS ===")
-    for command in bot.commands:
-        print(f"- {command.name} (cog: {command.cog_name})")
-
-    print("\n=== COGS ===")
-    for cog_name, cog in bot.cogs.items():
-        print(f"- {cog_name}")
-        for cmd in cog.get_commands():
-            print(f"  - {cmd.name}")
 
     print("\n=== EVENTS ===")
     # bot._listeners is a dict of event_name -> list of callbacks
