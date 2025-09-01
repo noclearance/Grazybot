@@ -1293,3 +1293,4 @@ if __name__ == "__main__":
         raise Exception("DATABASE_URL environment variable is not set. The bot cannot start.")
     asyncio.run(main())
 
+
