@@ -37,15 +37,14 @@ BINGO_FONT_FILE = "arial.ttf"
 # --- Environment Variable Validation ---
 if not all([TOKEN, WOM_CLAN_ID, WOM_VERIFICATION_CODE, GEMINI_API_KEY, DEBUG_GUILD_ID_STR, DATABASE_URL]):
     log.critical("CRITICAL: One or more environment variables are missing. Please check your Render dashboard.")
-    # We don't exit here, so the diagnostics command can still run and report the issue.
     
 DEBUG_GUILD_ID = int(DEBUG_GUILD_ID_STR) if DEBUG_GUILD_ID_STR else None
 
-# Channel IDs - Using .get() to avoid crashing if one is missing
+# Channel IDs
 SOTW_CHANNEL_ID = int(os.getenv('SOTW_CHANNEL_ID', 0))
 BINGO_CHANNEL_ID = int(os.getenv('BINGO_CHANNEL_ID', 0))
 RAFFLE_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID', 0))
-GIVEAWAY_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID', 0)) # Uses raffle channel
+GIVEAWAY_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID', 0))
 RECAP_CHANNEL_ID = int(os.getenv('RECAP_CHANNEL_ID', 0))
 ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID', 0))
 PVM_EVENT_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID', 0))
@@ -63,7 +62,7 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = discord.Bot(intents=intents)
-bot.db_pool = None # To be initialized in on_ready
+bot.db_pool = None
 bot.active_polls = {}
 
 # --- Command Groups ---
@@ -72,7 +71,7 @@ bot.add_application_command(admin)
 
 # --- Database & Threading Helpers ---
 async def run_in_executor(func, *args, **kwargs):
-    """Runs a synchronous function (like image generation) in a separate thread."""
+    """Runs a synchronous function in a separate thread to avoid blocking."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, partial(func, *args, **kwargs))
 
@@ -80,23 +79,24 @@ async def setup_database():
     """Sets up the necessary database tables if they don't exist using asyncpg."""
     try:
         async with bot.db_pool.acquire() as conn:
+            # This logic creates the tables but DOES NOT add the new columns.
+            # The new /admin update_database command handles adding columns to existing tables.
             await conn.execute("""CREATE TABLE IF NOT EXISTS active_competitions (id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE)""")
-            await conn.execute("""CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT, final_ping_sent BOOLEAN DEFAULT FALSE)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT)""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS raffle_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, raffle_id INTEGER REFERENCES raffles(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, source TEXT DEFAULT 'self')""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, board_json TEXT, message_id BIGINT, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE)""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_submissions (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id BIGINT, task_name TEXT, proof_url TEXT, status TEXT DEFAULT 'pending', bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE)""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_completed_tiles (bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE, task_name TEXT, PRIMARY KEY (bingo_id, task_name))""")
             await conn.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
             await conn.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
-            await conn.execute("""CREATE TABLE IF NOT EXISTS giveaways (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT NOT NULL, ends_at TIMESTAMPTZ NOT NULL, max_number INTEGER NOT NULL, winner_id BIGINT, winning_number INTEGER)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS giveaways (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT NOT NULL, ends_at TIMESTAMPTZ NOT NULL, max_number INTEGER NOT NULL)""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS giveaway_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, giveaway_id INTEGER REFERENCES giveaways(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, chosen_number INTEGER NOT NULL, UNIQUE (giveaway_id, chosen_number), UNIQUE (giveaway_id, user_id))""")
             await conn.execute("CREATE TABLE IF NOT EXISTS pvm_guides (boss_name TEXT PRIMARY KEY, guide_text TEXT NOT NULL)")
         log.info("Database setup checked/completed.")
     except Exception as e:
         log.critical(f"DATABASE SETUP FAILED: {e}", exc_info=True)
 
-
-# --- SOTW Poll View ---
+# --- SOTW Poll View and other classes... ---
 class SotwPollView(discord.ui.View):
     def __init__(self, author):
         super().__init__(timeout=86400); self.author = author; self.votes = {};
@@ -165,7 +165,6 @@ class FinishButton(discord.ui.Button):
             log.error(f"Error in FinishButton callback: {e}", exc_info=True)
             await interaction.followup.send("An error occurred while finishing the poll.", ephemeral=True)
 
-# --- Bingo Submission View ---
 class SubmissionView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -703,6 +702,30 @@ async def diagnostics(ctx: discord.ApplicationContext):
 
     await ctx.edit(content="\n".join(results))
 
+@admin.command(name="update_database", description="One-time command to update the database schema.")
+async def update_database_command(ctx: discord.ApplicationContext):
+    await ctx.defer(ephemeral=True)
+    try:
+        log.info(f"Database update initiated by {ctx.author.name} ({ctx.author.id}).")
+        results = ["**--- Database Update Report ---**"]
+        async with bot.db_pool.acquire() as conn:
+            # Add 'final_ping_sent' to 'raffles' table
+            await conn.execute("ALTER TABLE raffles ADD COLUMN IF NOT EXISTS final_ping_sent BOOLEAN DEFAULT FALSE;")
+            results.append("✅ Checked/Added `final_ping_sent` to `raffles` table.")
+
+            # Add 'winner_id' to 'giveaways' table
+            await conn.execute("ALTER TABLE giveaways ADD COLUMN IF NOT EXISTS winner_id BIGINT;")
+            results.append("✅ Checked/Added `winner_id` to `giveaways` table.")
+
+            # Add 'winning_number' to 'giveaways' table
+            await conn.execute("ALTER TABLE giveaways ADD COLUMN IF NOT EXISTS winning_number INTEGER;")
+            results.append("✅ Checked/Added `winning_number` to `giveaways` table.")
+        
+        results.append("\n**Database schema is now up to date! Please restart the bot service.**")
+        await ctx.edit(content="\n".join(results))
+    except Exception as e:
+        log.error(f"Error in /admin update_database: {e}", exc_info=True)
+        await ctx.edit(content=f"An error occurred during the database update. Check the logs.\nError: `{e}`")
 
 # --- BOT COMMANDS ---
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
@@ -1189,7 +1212,7 @@ async def announce(ctx, message: str, channel: discord.TextChannel, ping_everyon
 
 @admin.command(name="manage_points", description="Add or remove Clan Points from a member.")
 @discord.default_permissions(manage_guild=True)
-async def manage_points(ctx, member: discord.Member, action: str, amount: int, reason: str):
+async def manage_points(ctx, member: discord.Member, action: discord.Option(str, choices=['add', 'remove']), amount: int, reason: str):
     await ctx.defer(ephemeral=True)
     try:
         if action == "add":
