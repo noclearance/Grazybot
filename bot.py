@@ -36,7 +36,8 @@ BINGO_FONT_FILE = "arial.ttf"
 
 # --- Environment Variable Validation ---
 if not all([TOKEN, WOM_CLAN_ID, WOM_VERIFICATION_CODE, GEMINI_API_KEY, DEBUG_GUILD_ID_STR, DATABASE_URL]):
-    log.critical("CRITICAL: One or more environment variables are missing. Please check your Render dashboard.")
+    log.critical("CRITICAL: One or more environment variables are missing. Please check your Render dashboard. The bot will now exit.")
+    sys.exit(1)
     
 DEBUG_GUILD_ID = int(DEBUG_GUILD_ID_STR) if DEBUG_GUILD_ID_STR else None
 
@@ -44,10 +45,10 @@ DEBUG_GUILD_ID = int(DEBUG_GUILD_ID_STR) if DEBUG_GUILD_ID_STR else None
 SOTW_CHANNEL_ID = int(os.getenv('SOTW_CHANNEL_ID', 0))
 BINGO_CHANNEL_ID = int(os.getenv('BINGO_CHANNEL_ID', 0))
 RAFFLE_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID', 0))
-GIVEAWAY_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID', 0))
+GIVEAWAY_CHANNEL_ID = int(os.getenv('GIVEAWAY_CHANNEL_ID', 0))
 RECAP_CHANNEL_ID = int(os.getenv('RECAP_CHANNEL_ID', 0))
 ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID', 0))
-PVM_EVENT_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID', 0))
+PVM_EVENT_CHANNEL_ID = int(os.getenv('PVM_EVENT_CHANNEL_ID', 0))
 
 # Configure the Gemini AI
 if GEMINI_API_KEY:
@@ -71,7 +72,7 @@ bot.add_application_command(admin)
 
 # --- Database & Threading Helpers ---
 async def run_in_executor(func, *args, **kwargs):
-    """Runs a synchronous function in a separate thread to avoid blocking."""
+    """Runs a synchronous function (like image generation) in a separate thread."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, partial(func, *args, **kwargs))
 
@@ -79,22 +80,34 @@ async def setup_database():
     """Sets up the necessary database tables if they don't exist using asyncpg."""
     try:
         async with bot.db_pool.acquire() as conn:
-            # This logic creates the tables but DOES NOT add the new columns.
-            # The new /admin update_database command handles adding columns to existing tables.
+            # This logic creates the tables with the FINAL, correct schema.
             await conn.execute("""CREATE TABLE IF NOT EXISTS active_competitions (id INTEGER PRIMARY KEY, title TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE, winners_awarded BOOLEAN DEFAULT FALSE)""")
-            await conn.execute("""CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT)""")
-            await conn.execute("""CREATE TABLE IF NOT EXISTS raffle_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, raffle_id INTEGER REFERENCES raffles(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, source TEXT DEFAULT 'self')""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS raffles (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT, ends_at TIMESTAMPTZ, winner_id BIGINT, final_ping_sent BOOLEAN DEFAULT FALSE)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS raffle_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, raffle_id INTEGER REFERENCES raffles(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, source TEXT DEFAULT 'user')""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_events (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, board_json TEXT, message_id BIGINT, midway_ping_sent BOOLEAN DEFAULT FALSE, final_ping_sent BOOLEAN DEFAULT FALSE)""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_submissions (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id BIGINT, task_name TEXT, proof_url TEXT, status TEXT DEFAULT 'pending', bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE)""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS bingo_completed_tiles (bingo_id INTEGER REFERENCES bingo_events(id) ON DELETE CASCADE, task_name TEXT, PRIMARY KEY (bingo_id, task_name))""")
             await conn.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
             await conn.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
-            await conn.execute("""CREATE TABLE IF NOT EXISTS giveaways (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT NOT NULL, ends_at TIMESTAMPTZ NOT NULL, max_number INTEGER NOT NULL)""")
+            await conn.execute("""CREATE TABLE IF NOT EXISTS giveaways (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, prize TEXT NOT NULL, ends_at TIMESTAMPTZ NOT NULL, max_number INTEGER NOT NULL, winner_id BIGINT, winning_number INTEGER)""")
             await conn.execute("""CREATE TABLE IF NOT EXISTS giveaway_entries (entry_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, giveaway_id INTEGER REFERENCES giveaways(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, chosen_number INTEGER NOT NULL, UNIQUE (giveaway_id, chosen_number), UNIQUE (giveaway_id, user_id))""")
             await conn.execute("CREATE TABLE IF NOT EXISTS pvm_guides (boss_name TEXT PRIMARY KEY, guide_text TEXT NOT NULL)")
         log.info("Database setup checked/completed.")
     except Exception as e:
         log.critical(f"DATABASE SETUP FAILED: {e}", exc_info=True)
+
+async def migrate_database_schema():
+    """One-time migration to add missing columns to existing tables."""
+    try:
+        async with bot.db_pool.acquire() as conn:
+            log.info("Running database schema migration...")
+            await conn.execute("ALTER TABLE raffles ADD COLUMN IF NOT EXISTS final_ping_sent BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE giveaways ADD COLUMN IF NOT EXISTS winner_id BIGINT;")
+            await conn.execute("ALTER TABLE giveaways ADD COLUMN IF NOT EXISTS winning_number INTEGER;")
+            log.info("Database schema migration check complete.")
+    except Exception as e:
+        log.critical(f"DATABASE MIGRATION FAILED: {e}", exc_info=True)
+
 
 # --- SOTW Poll View and other classes... ---
 class SotwPollView(discord.ui.View):
@@ -607,6 +620,7 @@ async def on_ready():
             if bot.db_pool:
                 log.info("Successfully connected to the database.")
                 await setup_database()
+                await migrate_database_schema() # AUTOMATICALLY UPDATE SCHEMA
         else:
             log.critical("DATABASE_URL is not set. Database features will be disabled.")
 
@@ -627,6 +641,9 @@ async def on_message(message):
         async with message.channel.typing():
             prompt = f"You are an expert Old School RuneScape (OSRS) player. Respond to the following query with a gear/inventory setup formatted for Discord: \"{question}\""
             try:
+                if not ai_model:
+                    await message.reply("Sorry, AI features are currently disabled.")
+                    return
                 response = await run_in_executor(ai_model.generate_content, prompt)
                 embed = discord.Embed(title="Gear & Inventory Guide", description=response.text, color=discord.Color.blue())
                 embed.set_footer(text=f"Guide for: {question}")
@@ -701,31 +718,6 @@ async def diagnostics(ctx: discord.ApplicationContext):
         results.append(f"❌ An unknown error occurred while reading `{TASKS_FILE}`. Error: `{e}`")
 
     await ctx.edit(content="\n".join(results))
-
-@admin.command(name="update_database", description="One-time command to update the database schema.")
-async def update_database_command(ctx: discord.ApplicationContext):
-    await ctx.defer(ephemeral=True)
-    try:
-        log.info(f"Database update initiated by {ctx.author.name} ({ctx.author.id}).")
-        results = ["**--- Database Update Report ---**"]
-        async with bot.db_pool.acquire() as conn:
-            # Add 'final_ping_sent' to 'raffles' table
-            await conn.execute("ALTER TABLE raffles ADD COLUMN IF NOT EXISTS final_ping_sent BOOLEAN DEFAULT FALSE;")
-            results.append("✅ Checked/Added `final_ping_sent` to `raffles` table.")
-
-            # Add 'winner_id' to 'giveaways' table
-            await conn.execute("ALTER TABLE giveaways ADD COLUMN IF NOT EXISTS winner_id BIGINT;")
-            results.append("✅ Checked/Added `winner_id` to `giveaways` table.")
-
-            # Add 'winning_number' to 'giveaways' table
-            await conn.execute("ALTER TABLE giveaways ADD COLUMN IF NOT EXISTS winning_number INTEGER;")
-            results.append("✅ Checked/Added `winning_number` to `giveaways` table.")
-        
-        results.append("\n**Database schema is now up to date! Please restart the bot service.**")
-        await ctx.edit(content="\n".join(results))
-    except Exception as e:
-        log.error(f"Error in /admin update_database: {e}", exc_info=True)
-        await ctx.edit(content=f"An error occurred during the database update. Check the logs.\nError: `{e}`")
 
 # --- BOT COMMANDS ---
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
@@ -849,11 +841,11 @@ async def enter_raffle(ctx: discord.ApplicationContext):
             if not raffle_data:
                 return await ctx.edit(content="There is no active raffle to enter right now.")
             
-            count = await conn.fetchval("SELECT COUNT(*) FROM raffle_entries WHERE user_id = $1 AND raffle_id = $2 AND source = 'self'", ctx.author.id, raffle_data['id'])
+            count = await conn.fetchval("SELECT COUNT(*) FROM raffle_entries WHERE user_id = $1 AND raffle_id = $2 AND source = 'user'", ctx.author.id, raffle_data['id'])
             if count >= 10:
                 return await ctx.edit(content="You have already claimed your maximum of 10 tickets for this raffle!")
 
-            await conn.execute("INSERT INTO raffle_entries (user_id, source, raffle_id) VALUES ($1, 'self', $2)", ctx.author.id, raffle_data['id'])
+            await conn.execute("INSERT INTO raffle_entries (user_id, source, raffle_id) VALUES ($1, 'user', $2)", ctx.author.id, raffle_data['id'])
             total_tickets = await conn.fetchval("SELECT COUNT(*) FROM raffle_entries WHERE user_id = $1 AND raffle_id = $2", ctx.author.id, raffle_data['id'])
         
         await ctx.edit(content=f"You have successfully claimed a ticket for the **{raffle_data['prize']}** raffle! You now have a total of {total_tickets} ticket(s).")
@@ -894,7 +886,7 @@ async def edit_tickets(ctx: discord.ApplicationContext, member: discord.Member, 
             async with conn.transaction():
                 await conn.execute("DELETE FROM raffle_entries WHERE user_id = $1 AND raffle_id = $2", member.id, raffle_data['id'])
                 if new_total > 0:
-                    entries = [(raffle_data['id'], member.id, 'admin_edit') for _ in range(new_total)]
+                    entries = [(raffle_data['id'], member.id, 'admin') for _ in range(new_total)]
                     await conn.copy_records_to_table('raffle_entries', records=entries, columns=['raffle_id', 'user_id', 'source'])
         
         await ctx.edit(content=f"Successfully set {member.display_name}'s ticket count to {new_total} for the '{raffle_data['prize']}' raffle.")
