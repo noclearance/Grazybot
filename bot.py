@@ -19,7 +19,6 @@ from io import BytesIO
 from discord.commands import SlashCommandGroup, Option
 import re
 
-# diagnose_bot.py
 import os
 import asyncio
 import discord
@@ -46,10 +45,11 @@ async def main():
         print("Slash command fetch error:", e)
     await bot.close()
 
-if _name_ == "_main_":
+if __name__ == "_main_":
     asyncio.run(main())
 
 # --- Configuration & Setup ---
+from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv('TOKEN')
 WOM_CLAN_ID = os.getenv('WOM_CLAN_ID')
