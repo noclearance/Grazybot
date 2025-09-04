@@ -86,7 +86,9 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = discord.Bot(intents=intents)
+from discord.ext import commands
+
+bot = commands.Bot(command_prefix="!", intents=intents)
 bot.db_pool = None
 bot.active_polls = {}
 
