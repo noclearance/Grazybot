@@ -19,8 +19,6 @@ from io import BytesIO
 from discord.commands import SlashCommandGroup, Option
 import re
 
-
-; ----------GrazyDiagnose ----
 # diagnose_bot.py
 import os
 import asyncio
