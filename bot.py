@@ -1,5 +1,4 @@
 # bot.py
-start_web_server
 import discord
 from discord.ext import tasks
 import os
