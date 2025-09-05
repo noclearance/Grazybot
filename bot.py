@@ -706,7 +706,9 @@ async def event_manager():
     cursor_gw.close()
     conn_gw.close()
 
-
+async def handle_http(request):
+    """A simple HTTP handler for health checks."""
+    return web.Response(text="Bot is running.")
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_http)
