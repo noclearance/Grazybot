@@ -1,5 +1,5 @@
 # bot.py
-
+start_web_server
 import discord
 from discord.ext import tasks
 import os
@@ -707,6 +707,7 @@ async def event_manager():
     cursor_gw.close()
     conn_gw.close()
 
+
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_http)
@@ -720,6 +721,7 @@ async def start_web_server():
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()
+
 
 # --- BOT EVENTS ---
 @bot.event
