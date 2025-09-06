@@ -17,12 +17,13 @@ import google.generativeai as genai
 from io import BytesIO
 from discord.commands import SlashCommandGroup, Option
 import re
+import google.generativeai as genai
 
 import os
 import asyncio
 import discord
 from discord.ext import commands
-
+from datetime import datetime, timedelta, timezone
 async def main():
     token = os.getenv("DISCORD_TOKEN")
     print("Token loaded:", bool(token))
