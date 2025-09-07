@@ -78,6 +78,7 @@ WOM_SKILLS = ["overall", "attack", "defence", "strength", "hitpoints", "ranged",
 intents = discord.Intents.default()
 intents.members = True
 bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
+bot.item_mapping = {}
 bot.active_polls = {}
 
 # --- Database Setup ---
@@ -585,6 +586,42 @@ async def send_global_announcement(event_type: str, details: dict, message_url: 
     embed.add_field(name="Details", value=f"[Click here to view the event!]({message_url})")
     embed.set_footer(text="A new clan event has started!")
     await announcement_channel.send(content="@everyone", embed=embed)
+async def load_item_mapping():
+    """Fetches the item name-to-ID mapping from the OSRS Cloud API on startup."""
+    url = "https://prices.osrs.cloud/api/v1/latest/mapping"
+    headers = {'User-Agent': 'GrazyBot/1.0'} # APIs appreciate a custom user-agent
+    async with aiohttp.ClientSession(headers=headers) as session:
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # Create a mapping of item name -> item details
+                    bot.item_mapping = {item['name'].lower(): item for item in data}
+                    print(f"Successfully loaded {len(bot.item_mapping)} items.")
+                else:
+                    print(f"Error loading item mapping: API returned status {response.status}")
+        except Exception as e:
+            print(f"An exception occurred while loading item mapping: {e}")
+
+def format_price_timestamp(ts: int) -> str:
+    """Formats a UNIX timestamp into a human-readable relative time string."""
+    if not ts:
+        return "N/A"
+    dt_object = datetime.fromtimestamp(ts, tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    delta = now - dt_object
+
+    if delta.total_seconds() < 60:
+        return "just now"
+    elif delta.total_seconds() < 3600:
+        minutes = int(delta.total_seconds() / 60)
+        return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+    elif delta.total_seconds() < 86400:
+        hours = int(delta.total_seconds() / 3600)
+        return f"{hours} hour{'s' if hours > 1 else ''} ago"
+    else:
+        days = delta.days
+        return f"{days} day{'s' if days > 1 else ''} ago"
 
 # --- Event Manager & Periodic Reminder Tasks ---
 @tasks.loop(hours=4)
@@ -743,6 +780,7 @@ async def start_web_server():
 @bot.event
 async def on_ready():
     print(f"{bot.user} is online and ready!")
+    await load_item_mapping() 
     setup_database()
     event_manager.start()
     periodic_event_reminder.start()
@@ -760,6 +798,82 @@ async def on_ready():
     print("Giveaway views re-registered.")
 
 # --- BOT COMMANDS ---
+ge = bot.create_group("ge", "Commands for the Grand Exchange.")
+
+async def item_autocomplete(ctx: discord.AutocompleteContext):
+    """Provides autocomplete suggestions for OSRS items."""
+    query = ctx.value.lower()
+    if not query:
+        # Show some popular items if the user hasn't typed anything
+        popular_items = ["Twisted bow", "Scythe of vitur", "Abyssal whip", "Dragon claws"]
+        return popular_items
+        
+    # Find all item names that start with the user's query
+    matches = [
+        name.title() for name in bot.item_mapping.keys()
+        if name.startswith(query)
+    ]
+    # Return the first 25 matches
+    return matches[:25]
+
+@ge.command(name="price", description="Check the Grand Exchange price of an item.")
+async def price(
+    ctx: discord.ApplicationContext,
+    item: discord.Option(str, "The name of the item to check.", autocomplete=item_autocomplete)
+):
+    await ctx.defer()
+    
+    item_name_lower = item.lower()
+    
+    if item_name_lower not in bot.item_mapping:
+        return await ctx.respond("Could not find this item. Please choose one from the list.", ephemeral=True)
+        
+    item_details = bot.item_mapping[item_name_lower]
+    item_id = item_details['id']
+    
+    url = f"https://prices.osrs.cloud/api/v1/latest/item/{item_id}"
+    headers = {'User-Agent': 'GrazyBot/1.0'}
+    
+    async with aiohttp.ClientSession(headers=headers) as session:
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return await ctx.respond(f"Error fetching price data (Status: {response.status}). Please try again later.", ephemeral=True)
+                
+                price_data = await response.json()
+                
+                # Create the response embed
+                embed = discord.Embed(
+                    title=f"Price Check: {item_details['name']}",
+                    color=discord.Color.gold(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                
+                icon_url = item_details.get('icon')
+                if icon_url:
+                    embed.set_thumbnail(url=icon_url)
+
+                buy_price = price_data.get('high', 0)
+                sell_price = price_data.get('low', 0)
+                margin = buy_price - sell_price
+
+                embed.add_field(name="Buy Price (Instant)", value=f"{buy_price:,} gp", inline=True)
+                embed.add_field(name="Sell Price (Instant)", value=f"{sell_price:,} gp", inline=True)
+                embed.add_field(name="Profit Margin", value=f"{margin:,} gp", inline=True)
+
+                buy_time = format_price_timestamp(price_data.get('highTime'))
+                sell_time = format_price_timestamp(price_data.get('lowTime'))
+
+                embed.add_field(name="Last Buy", value=f"Updated {buy_time}", inline=True)
+                embed.add_field(name="Last Sell", value=f"Updated {sell_time}", inline=True)
+
+                embed.set_footer(text="Price data from osrs.cloud")
+
+                await ctx.respond(embed=embed)
+
+        except Exception as e:
+            print(f"Error in /ge price command: {e}")
+            await ctx.respond("An unexpected error occurred while fetching price data.", ephemeral=True)
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
 @sotw.command(name="start", description="Manually start a new SOTW competition.")
 async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_days: discord.Option(int, default=7)):
