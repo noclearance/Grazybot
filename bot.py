@@ -18,6 +18,7 @@ from io import BytesIO
 from discord.commands import SlashCommandGroup, Option
 import re
 import google.generativeai as genai
+import urllib.parse as up
 
 import os
 import asyncio
