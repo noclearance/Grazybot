@@ -64,7 +64,9 @@ def get_db_connection():
     )
     return conn
 
-def setup_database():
+# REPLACE the old setup_database function with this new one
+def _sync_setup_database():
+    """This is the part of the code that blocks."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -139,6 +141,11 @@ def setup_database():
     cursor.close()
     conn.close()
 
+async def setup_database():
+    """Runs the synchronous setup code in a separate thread to avoid blocking."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _sync_setup_database)
+    print("Database setup complete.")
 # --- All View Classes ---
 class SotwPollView(discord.ui.View):
     def __init__(self, author):
@@ -740,14 +747,13 @@ async def start_web_server():
 
 # --- BOT EVENTS ---
 @bot.event
-@bot.event
 async def on_ready():
     print(f"{bot.user} is online and ready!")
 
     # Launch load_item_mapping as a background task instead of waiting for it
     asyncio.create_task(load_item_mapping())
 
-    setup_database()
+    await setup_database()
     event_manager.start()
     periodic_event_reminder.start()
     bot.add_view(SubmissionView())
