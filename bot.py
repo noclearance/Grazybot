@@ -258,15 +258,19 @@ async def load_item_mapping():
     """Fetches the item name-to-ID mapping from the OSRS Cloud API on startup."""
     url = "https://prices.osrs.cloud/api/v1/latest/mapping"
     headers = {'User-Agent': 'GrazyBot/1.0'}
-    async with aiohttp.ClientSession(headers=headers) as session:
+    # Adding a 30-second timeout to prevent the bot from hanging forever
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         try:
             async with session.get(url) as response:
                 if response.status == 200:
                     data = await response.json()
                     bot.item_mapping = {item['name'].lower(): item for item in data}
-                    print(f"Successfully loaded {len(bot.item_mapping)} items.")
+                    print(f"Successfully loaded {len(bot.item_mapping)} items in the background.")
                 else:
                     print(f"Error loading item mapping: API returned status {response.status}")
+        except asyncio.TimeoutError:
+            print("Error loading item mapping: The request timed out.")
         except Exception as e:
             print(f"An exception occurred while loading item mapping: {e}")
 
@@ -736,13 +740,19 @@ async def start_web_server():
 
 # --- BOT EVENTS ---
 @bot.event
+@bot.event
 async def on_ready():
     print(f"{bot.user} is online and ready!")
-    await load_item_mapping()
+
+    # Launch load_item_mapping as a background task instead of waiting for it
+    asyncio.create_task(load_item_mapping())
+
     setup_database()
     event_manager.start()
     periodic_event_reminder.start()
     bot.add_view(SubmissionView())
+
+    # Re-register persistent views for giveaways
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute("SELECT message_id FROM giveaways WHERE is_active = TRUE AND ends_at > NOW()")
