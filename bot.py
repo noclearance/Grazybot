@@ -1030,6 +1030,13 @@ async def view_tickets(ctx: discord.ApplicationContext):
                 continue # Skip if member left the server
         embed.description = description
     await ctx.respond(embed=embed)
+@admin.command(name="check_items", description="Check the status of the OSRS item mapping.")
+@discord.default_permissions(manage_guild=True)
+async def check_items(ctx: discord.ApplicationContext):
+    if bot.item_mapping:
+        await ctx.respond(f"✅ The item list is loaded with **{len(bot.item_mapping)}** items.", ephemeral=True)
+    else:
+        await ctx.respond("❌ The item list is not loaded yet. Please check the logs for errors.", ephemeral=True)
 
 @raffle.command(name="draw_now", description="ADMIN: Immediately ends the raffle and draws a winner.")
 @discord.default_permissions(manage_events=True)
