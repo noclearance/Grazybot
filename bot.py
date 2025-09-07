@@ -80,8 +80,21 @@ bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 bot.active_polls = {}
 
 # --- Database Setup ---
+
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    # This new version will correctly parse the DATABASE_URL from Render
+    # and explicitly tell the database library to use a secure SSL connection.
+    up.uses_netloc.append("postgres")
+    url = up.urlparse(os.environ["DATABASE_URL"])
+    conn = psycopg2.connect(
+        database=url.path[1:],
+        user=url.username,
+        password=url.password,
+        host=url.hostname,
+        port=url.port,
+        sslmode='require' # This is the explicit command to use SSL
+    )
+    return conn
 
 def setup_database():
     conn = get_db_connection()
