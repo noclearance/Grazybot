@@ -52,8 +52,6 @@ bot.active_polls = {}
 
 # --- Database Setup ---
 def get_db_connection():
-    # This new version will correctly parse the DATABASE_URL from Render
-    # and explicitly tell the database library to use a secure SSL connection.
     up.uses_netloc.append("postgres")
     url = up.urlparse(os.environ["DATABASE_URL"])
     conn = psycopg2.connect(
@@ -62,7 +60,7 @@ def get_db_connection():
         password=url.password,
         host=url.hostname,
         port=url.port,
-        sslmode='require' # This is the explicit command to use SSL
+        sslmode='require'
     )
     return conn
 
@@ -81,7 +79,6 @@ def setup_database():
     cursor.execute("CREATE TABLE IF NOT EXISTS bingo_completed_tiles (task_name TEXT PRIMARY KEY)")
     cursor.execute("CREATE TABLE IF NOT EXISTS user_links (discord_id BIGINT PRIMARY KEY, osrs_name TEXT NOT NULL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS clan_points (discord_id BIGINT PRIMARY KEY, points INTEGER DEFAULT 0)")
-    # Tables for Pointstore
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS rewards (
         id SERIAL PRIMARY KEY,
@@ -105,7 +102,6 @@ def setup_database():
         point_cost INTEGER NOT NULL,
         redeemed_at TIMESTAMPTZ DEFAULT NOW()
     )""")
-    # Tables for Giveaway
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS giveaways (
         message_id BIGINT PRIMARY KEY,
@@ -123,7 +119,6 @@ def setup_database():
         user_id BIGINT NOT NULL,
         UNIQUE (message_id, user_id)
     )""")
-    # Tables for PVM Event Scheduler
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS pvm_events (
         id SERIAL PRIMARY KEY,
@@ -153,7 +148,6 @@ class SotwPollView(discord.ui.View):
         ai_embed_data = await generate_announcement_json("sotw_poll")
         vote_description = "\n\n**Current Votes:**\n"
         for skill, voters in self.votes.items(): vote_description += f"**{skill.capitalize()}**: {len(voters)} vote(s)\n"
-
         embed = discord.Embed.from_dict(ai_embed_data)
         embed.description += vote_description
         embed.set_footer(text=f"Poll started by {self.author.display_name}", icon_url=self.author.display_avatar.url);
@@ -172,10 +166,8 @@ class SotwButton(discord.ui.Button):
                 else: voters.remove(interaction.user); self.view.votes[self.custom_id].append(interaction.user); voted = True
                 break
         else: self.view.votes[self.custom_id].append(interaction.user); voted = True
-
         new_embed = await self.view.create_embed()
         await interaction.response.edit_message(embed=new_embed, view=self.view)
-
         if voted: await interaction.followup.send(f"Your vote for **{self.label}** has been counted.", ephemeral=True)
         else: await interaction.followup.send("Your vote has been removed.", ephemeral=True)
 
@@ -188,14 +180,12 @@ class FinishButton(discord.ui.Button):
         winner = max(view.votes, key=lambda k: len(view.votes[k])); await interaction.response.defer(ephemeral=True)
         data, error = await create_competition(WOM_CLAN_ID, winner, 7)
         if error: await interaction.followup.send(f"Poll finished, but failed to start for **{winner.capitalize()}**: {error}", ephemeral=True); return
-
         sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
         if sotw_channel:
             embed = await create_competition_embed(data, interaction.user, poll_winner=True)
             sotw_message = await sotw_channel.send(embed=embed)
             await send_global_announcement("sotw_start", {"skill": winner.capitalize()}, sotw_message.jump_url)
             await interaction.followup.send("Competition created in the SOTW channel!", ephemeral=True)
-
         for item in view.children: item.disabled = True
         await interaction.message.edit(view=view)
         bot.active_polls.pop(interaction.guild.id, None)
@@ -207,7 +197,6 @@ class SubmissionView(discord.ui.View):
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="approve_submission")
     async def approve_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         submission_id = int(interaction.message.embeds[0].footer.text.split(": ")[1])
-
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT user_id, task_name FROM bingo_submissions WHERE id = %s", (submission_id,))
@@ -215,35 +204,28 @@ class SubmissionView(discord.ui.View):
         if not submission_data:
             conn.close()
             return await interaction.response.send_message("This submission was already handled.", ephemeral=True)
-
         user_id, task_name = submission_data
-
         cursor.execute("UPDATE bingo_submissions SET status = 'approved' WHERE id = %s", (submission_id,))
         cursor.execute("INSERT INTO bingo_completed_tiles (task_name) VALUES (%s) ON CONFLICT (task_name) DO NOTHING", (task_name,))
         conn.commit()
         cursor.close()
         conn.close()
-
         await interaction.message.delete()
         await interaction.response.send_message(f"Submission #{submission_id} approved.", ephemeral=True)
-
         member = interaction.guild.get_member(user_id)
         if member:
             await award_points(member, 25, f"completing the bingo task: '{task_name}'")
-
         await update_bingo_board_post()
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="deny_submission")
     async def deny_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         submission_id = int(interaction.message.embeds[0].footer.text.split(": ")[1])
-
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("UPDATE bingo_submissions SET status = 'denied' WHERE id = %s", (submission_id,))
         conn.commit()
         cursor.close()
         conn.close()
-
         await interaction.message.delete()
         await interaction.response.send_message(f"Submission #{submission_id} denied.", ephemeral=True)
 
@@ -257,10 +239,7 @@ class GiveawayView(discord.ui.View):
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute(
-                "INSERT INTO giveaway_entries (message_id, user_id) VALUES (%s, %s) ON CONFLICT (message_id, user_id) DO NOTHING",
-                (self.message_id, interaction.user.id)
-            )
+            cursor.execute("INSERT INTO giveaway_entries (message_id, user_id) VALUES (%s, %s) ON CONFLICT (message_id, user_id) DO NOTHING", (self.message_id, interaction.user.id))
             conn.commit()
             if cursor.rowcount > 0:
                 await interaction.response.send_message("You have successfully entered the giveaway!", ephemeral=True)
@@ -275,9 +254,48 @@ class GiveawayView(discord.ui.View):
             conn.close()
 
 # --- Helper Functions ---
+async def load_item_mapping():
+    """Fetches the item name-to-ID mapping from the OSRS Cloud API on startup."""
+    url = "https://prices.osrs.cloud/api/v1/latest/mapping"
+    headers = {'User-Agent': 'GrazyBot/1.0'}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    bot.item_mapping = {item['name'].lower(): item for item in data}
+                    print(f"Successfully loaded {len(bot.item_mapping)} items.")
+                else:
+                    print(f"Error loading item mapping: API returned status {response.status}")
+        except Exception as e:
+            print(f"An exception occurred while loading item mapping: {e}")
+
+def format_price_timestamp(ts: int) -> str:
+    """Formats a UNIX timestamp into a human-readable relative time string."""
+    if not ts: return "N/A"
+    dt_object = datetime.fromtimestamp(ts, tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    delta = now - dt_object
+    if delta.total_seconds() < 60: return "just now"
+    elif delta.total_seconds() < 3600:
+        minutes = int(delta.total_seconds() / 60)
+        return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+    elif delta.total_seconds() < 86400:
+        hours = int(delta.total_seconds() / 3600)
+        return f"{hours} hour{'s' if hours > 1 else ''} ago"
+    else:
+        days = delta.days
+        return f"{days} day{'s' if days > 1 else ''} ago"
+
+def get_wom_metric_url(metric):
+    """Generates a URL for a specific OSRS Wiki skill/activity icon."""
+    base_url = "https://oldschool.runescape.wiki/images/"
+    icon_map = {"attack": "Attack_icon.png", "strength": "Strength_icon.png", "defence": "Defence_icon.png", "hitpoints": "Hitpoints_icon.png", "ranged": "Ranged_icon.png", "magic": "Magic_icon.png", "prayer": "Prayer_icon.png", "vorkath": "Vorkath.png", "zulrah": "Zulrah.png", "chambers_of_xeric": "Olmlet.png", "tombs_of_amascut": "Tumeken's_guardian.png"}
+    filename = icon_map.get(metric.lower().replace(" ", "_"), "Coins_10000.png")
+    return f"{base_url}{filename}"
+
 async def award_points(member: discord.Member, amount: int, reason: str):
     if not member or member.bot: return
-
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO clan_points (discord_id, points) VALUES (%s, 0) ON CONFLICT (discord_id) DO NOTHING", (member.id,))
@@ -286,7 +304,6 @@ async def award_points(member: discord.Member, amount: int, reason: str):
     conn.commit()
     cursor.close()
     conn.close()
-
     try:
         details = {"amount": amount, "reason": reason}
         ai_dm_data = await generate_announcement_json("points_award", details)
@@ -314,10 +331,8 @@ async def create_competition(clan_id: str, skill: str, duration_days: int):
 
 async def create_competition_embed(data, author, poll_winner=False):
     comp = data['competition']; comp_id = comp['id']
-
     details = {"skill": comp['metric'].capitalize()}
     ai_embed_data = await generate_announcement_json("sotw_start", details)
-
     embed = discord.Embed.from_dict(ai_embed_data)
     embed.url = f"https://wiseoldman.net/competitions/{comp_id}"
     start_dt = datetime.fromisoformat(comp['startsAt'].replace('Z', '+00:00')); end_dt = datetime.fromisoformat(comp['endsAt'].replace('Z', '+00:00'))
@@ -325,16 +340,18 @@ async def create_competition_embed(data, author, poll_winner=False):
     embed.set_footer(text=f"Competition started by {author.display_name}", icon_url=author.display_avatar.url)
     return embed
 
-async def generate_recap_text(gains_data: list) -> str:
+async def generate_recap_text(gains_data: list):
     data_summary = ""
     for i, player in enumerate(gains_data[:10]):
         rank = i + 1; username = player['player']['displayName']; gained = player.get('gained', 0)
         data_summary += f"{rank}. {username}: {gained:,} XP\n"
     prompt = f"You are the Taskmaster for an Old School RuneScape clan. Your tone is formal and encouraging. Write a weekly recap based on the following data. Announce the top 3 with extra flair. Keep it to a few short paragraphs. Do not use emojis or markdown. Data:\n{data_summary}"
     try:
-        response = await ai_model.generate_content_async(prompt); return response.text
+        response = await ai_model.generate_content_async(prompt)
+        return response.text
     except Exception as e:
-        print(f"An error occurred with the Gemini API: {e}"); return "The Taskmaster is currently reviewing the ledgers."
+        print(f"An error occurred with the Gemini API: {e}")
+        return "The Taskmaster is currently reviewing the ledgers."
 
 async def generate_announcement_json(event_type: str, details: dict = None) -> dict:
     details = details or {}
@@ -425,7 +442,6 @@ async def end_giveaway(giveaway_data):
     prize = giveaway_data['prize']
     winner_count = giveaway_data['winner_count']
     role_id = giveaway_data.get('role_id')
-
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute("UPDATE giveaways SET is_active = FALSE WHERE message_id = %s", (message_id,))
@@ -453,11 +469,7 @@ async def end_giveaway(giveaway_data):
     winner_ids = random.sample(user_ids, k=num_to_select)
     winner_mentions = [f"<@{winner_id}>" for winner_id in winner_ids]
     win_str = "Winner" if len(winner_mentions) == 1 else "Winners"
-    announcement_embed = discord.Embed(
-        title=f"🎉 Giveaway {win_str}! 🎉",
-        description=f"Congratulations to {', '.join(winner_mentions)}! You have won the giveaway!",
-        color=discord.Color.gold()
-    )
+    announcement_embed = discord.Embed(title=f"🎉 Giveaway {win_str}! 🎉", description=f"Congratulations to {', '.join(winner_mentions)}! You have won the giveaway!", color=discord.Color.gold())
     announcement_embed.add_field(name="Prize", value=f"**{prize}**", inline=False)
     role_to_award = guild.get_role(role_id) if role_id else None
     if role_to_award:
@@ -501,14 +513,14 @@ def parse_duration(duration_str: str) -> timedelta:
 def generate_bingo_image(tasks: list, completed_tasks: list = []):
     try:
         width, height = 1000, 1000
-        background_color = (40, 26, 13) # Dark wood color
+        background_color = (40, 26, 13)
         img = Image.new('RGB', (width, height), background_color)
         draw = ImageDraw.Draw(img)
         title_font = ImageFont.load_default()
         task_font = ImageFont.load_default()
         draw.text((width/2, 50), "CLAN BINGO", font=title_font, fill=(255, 215, 0), anchor="ms")
         grid_size = 5; cell_size = 170; margin = 50
-        line_color = (255, 215, 0) # Gold color
+        line_color = (255, 215, 0)
         for i in range(grid_size + 1):
             draw.line([(margin + i * cell_size, margin + 100), (margin + i * cell_size, height - margin)], fill=line_color, width=3)
             draw.line([(margin, margin + 100 + i * cell_size), (width - margin, margin + 100 + i * cell_size)], fill=line_color, width=3)
@@ -569,59 +581,6 @@ async def send_global_announcement(event_type: str, details: dict, message_url: 
     embed.add_field(name="Details", value=f"[Click here to view the event!]({message_url})")
     embed.set_footer(text="A new clan event has started!")
     await announcement_channel.send(content="@everyone", embed=embed)
-
-async def load_item_mapping():
-    """Fetches the item name-to-ID mapping from the OSRS Cloud API on startup."""
-    url = "https://prices.osrs.cloud/api/v1/latest/mapping"
-    headers = {'User-Agent': 'GrazyBot/1.0'} # APIs appreciate a custom user-agent
-    async with aiohttp.ClientSession(headers=headers) as session:
-        try:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    # Create a mapping of item name -> item details
-                    bot.item_mapping = {item['name'].lower(): item for item in data}
-                    print(f"Successfully loaded {len(bot.item_mapping)} items.")
-                else:
-                    print(f"Error loading item mapping: API returned status {response.status}")
-        except Exception as e:
-            print(f"An exception occurred while loading item mapping: {e}")
-
-def format_price_timestamp(ts: int) -> str:
-    """Formats a UNIX timestamp into a human-readable relative time string."""
-    if not ts:
-        return "N/A"
-    dt_object = datetime.fromtimestamp(ts, tz=timezone.utc)
-    now = datetime.now(timezone.utc)
-    delta = now - dt_object
-
-    if delta.total_seconds() < 60:
-        return "just now"
-    elif delta.total_seconds() < 3600:
-        minutes = int(delta.total_seconds() / 60)
-        return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
-    elif delta.total_seconds() < 86400:
-        hours = int(delta.total_seconds() / 3600)
-        return f"{hours} hour{'s' if hours > 1 else ''} ago"
-    else:
-        days = delta.days
-        return f"{days} day{'s' if days > 1 else ''} ago"
-
-def get_wom_metric_url(metric):
-    """Generates a URL for a specific OSRS Wiki skill/activity icon."""
-    base_url = "https://oldschool.runescape.wiki/images/"
-    # Simple mapping for a few common icons
-    icon_map = {
-        "attack": "Attack_icon.png", "strength": "Strength_icon.png",
-        "defence": "Defence_icon.png", "hitpoints": "Hitpoints_icon.png",
-        "ranged": "Ranged_icon.png", "magic": "Magic_icon.png",
-        "prayer": "Prayer_icon.png", "vorkath": "Vorkath.png",
-        "zulrah": "Zulrah.png", "chambers_of_xeric": "Olmlet.png",
-        "tombs_of_amascut": "Tumeken's_guardian.png"
-    }
-    # Default to a generic icon if not found
-    filename = icon_map.get(metric.lower().replace(" ", "_"), "Coins_10000.png")
-    return f"{base_url}{filename}"
 
 # --- Event Manager & Periodic Reminder Tasks ---
 @tasks.loop(hours=4)
@@ -766,7 +725,7 @@ async def start_web_server():
     app.router.add_get('/', handle_http)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     try:
         await site.start()
@@ -774,7 +733,6 @@ async def start_web_server():
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()
-
 
 # --- BOT EVENTS ---
 @bot.event
@@ -798,6 +756,121 @@ async def on_ready():
     print("Giveaway views re-registered.")
 
 # --- BOT COMMANDS ---
+admin = bot.create_group("admin", "Admin-only commands for managing the bot and server.")
+@admin.command(name="announce", description="Send a message as the bot to a specific channel.")
+@discord.default_permissions(manage_guild=True)
+async def announce(ctx: discord.ApplicationContext, message: discord.Option(str, "The message to send."), channel: discord.Option(discord.TextChannel, "The channel to send to."), ping_everyone: discord.Option(bool, "Whether to ping @everyone.", default=False)):
+    await ctx.defer(ephemeral=True)
+    content = "@everyone" if ping_everyone else ""
+    embed = discord.Embed(title="📢 Clan Announcement", description=message, color=discord.Color.orange())
+    embed.set_footer(text=f"Message sent by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+    try:
+        await channel.send(content=content, embed=embed)
+        await ctx.respond("Announcement sent successfully!", ephemeral=True)
+    except discord.Forbidden:
+        await ctx.respond("Error: I don't have permission to send messages in that channel.", ephemeral=True)
+    except Exception as e:
+        await ctx.respond(f"An unexpected error occurred: {e}", ephemeral=True)
+
+@admin.command(name="manage_points", description="Add or remove Clan Points from a member.")
+@discord.default_permissions(manage_guild=True)
+async def manage_points(ctx: discord.ApplicationContext, member: discord.Option(discord.Member, "The member to manage points for."), action: discord.Option(str, "Whether to add or remove points.", choices=["add", "remove"]), amount: discord.Option(int, "The number of points to add or remove.", min_value=1), reason: discord.Option(str, "The reason for this point adjustment.")):
+    await ctx.defer(ephemeral=True)
+    if action == "add":
+        await award_points(member, amount, reason)
+    else: # remove
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("INSERT INTO clan_points (discord_id, points) VALUES (%s, 0) ON CONFLICT (discord_id) DO NOTHING", (member.id,))
+        cursor.execute("UPDATE clan_points SET points = GREATEST(0, points - %s) WHERE discord_id = %s", (amount, member.id))
+        conn.commit()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT points FROM clan_points WHERE discord_id = %s", (member.id,))
+    new_balance = cursor.fetchone()[0]
+    cursor.close(); conn.close()
+    await ctx.respond(f"Successfully updated {member.display_name}'s points. Their new balance is {new_balance}.", ephemeral=True)
+
+@admin.command(name="award_sotw_winners", description="Manually award points for a past SOTW competition.")
+@discord.default_permissions(manage_guild=True)
+async def award_sotw_winners(ctx: discord.ApplicationContext, competition_id: discord.Option(int, "The ID of the competition from Wise Old Man.")):
+    await ctx.defer(ephemeral=True)
+    details_url = f"https://api.wiseoldman.net/v2/competitions/{competition_id}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(details_url) as response:
+            if response.status != 200:
+                return await ctx.respond(f"Could not fetch details for competition ID {competition_id}.")
+            comp_data = await response.json()
+    awarded_to = []
+    point_values = [100, 50, 25]
+    for i, participant in enumerate(comp_data.get('participations', [])[:3]):
+        osrs_name = participant['player']['displayName']
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("SELECT discord_id FROM user_links WHERE osrs_name = %s", (osrs_name,))
+        user_data = cursor.fetchone()
+        conn.close()
+        if user_data:
+            member = ctx.guild.get_member(user_data[0])
+            if member:
+                await award_points(member, point_values[i], f"placing #{i+1} in the {comp_data['title']} SOTW")
+                awarded_to.append(f"#{i+1}: {member.display_name} ({point_values[i]} points)")
+    if not awarded_to:
+        return await ctx.respond("No winners could be found or linked for that competition.")
+    await ctx.respond("Successfully awarded points to:\n" + "\n".join(awarded_to))
+
+@admin.command(name="check_items", description="Check the status of the OSRS item mapping.")
+@discord.default_permissions(manage_guild=True)
+async def check_items(ctx: discord.ApplicationContext):
+    if bot.item_mapping:
+        await ctx.respond(f"✅ The item list is loaded with **{len(bot.item_mapping)}** items.", ephemeral=True)
+    else:
+        await ctx.respond("❌ The item list is not loaded yet. Please check the logs for errors.", ephemeral=True)
+
+ge = bot.create_group("ge", "Commands for the Grand Exchange.")
+async def item_autocomplete(ctx: discord.AutocompleteContext):
+    """Provides autocomplete suggestions for OSRS items."""
+    query = ctx.value.lower()
+    if not query:
+        popular_items = ["Twisted bow", "Scythe of vitur", "Abyssal whip", "Dragon claws"]
+        return popular_items
+    matches = [name.title() for name in bot.item_mapping.keys() if name.startswith(query)]
+    return matches[:25]
+
+@ge.command(name="price", description="Check the Grand Exchange price of an item.")
+async def price(ctx: discord.ApplicationContext, item: discord.Option(str, "The name of the item to check.", autocomplete=item_autocomplete)):
+    if not bot.item_mapping:
+        return await ctx.respond("The item list is still loading from the server. Please wait a few more seconds and try again.", ephemeral=True)
+    await ctx.defer()
+    item_name_lower = item.lower()
+    if item_name_lower not in bot.item_mapping:
+        return await ctx.respond("Could not find this item. Please choose one from the list.", ephemeral=True)
+    item_details = bot.item_mapping[item_name_lower]
+    item_id = item_details['id']
+    url = f"https://prices.osrs.cloud/api/v1/latest/item/{item_id}"
+    headers = {'User-Agent': 'GrazyBot/1.0'}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return await ctx.respond(f"Error fetching price data (Status: {response.status}). Please try again later.", ephemeral=True)
+                price_data = await response.json()
+                embed = discord.Embed(title=f"Price Check: {item_details['name']}", color=discord.Color.gold(), timestamp=datetime.now(timezone.utc))
+                icon_url = item_details.get('icon')
+                if icon_url: embed.set_thumbnail(url=icon_url)
+                buy_price = price_data.get('high', 0)
+                sell_price = price_data.get('low', 0)
+                margin = buy_price - sell_price
+                embed.add_field(name="Buy Price (Instant)", value=f"{buy_price:,} gp", inline=True)
+                embed.add_field(name="Sell Price (Instant)", value=f"{sell_price:,} gp", inline=True)
+                embed.add_field(name="Profit Margin", value=f"{margin:,} gp", inline=True)
+                buy_time = format_price_timestamp(price_data.get('highTime'))
+                sell_time = format_price_timestamp(price_data.get('lowTime'))
+                embed.add_field(name="Last Buy", value=f"Updated {buy_time}", inline=True)
+                embed.add_field(name="Last Sell", value=f"Updated {sell_time}", inline=True)
+                embed.set_footer(text="Price data from osrs.cloud")
+                await ctx.respond(embed=embed)
+        except Exception as e:
+            print(f"Error in /ge price command: {e}")
+            await ctx.respond("An unexpected error occurred while fetching price data.", ephemeral=True)
+
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
 @sotw.command(name="start", description="Manually start a new SOTW competition.")
 async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_days: discord.Option(int, default=7)):
@@ -1319,73 +1392,6 @@ async def toggle_reward(ctx: discord.ApplicationContext, reward_name: str):
             if cursor and not cursor.closed: cursor.close()
             if not conn.closed: conn.close()
 
-admin = bot.create_group("admin", "Admin-only commands for managing the bot and server.")
-@admin.command(name="announce", description="Send a message as the bot to a specific channel.")
-@discord.default_permissions(manage_guild=True)
-async def announce(ctx: discord.ApplicationContext, message: discord.Option(str, "The message to send."), channel: discord.Option(discord.TextChannel, "The channel to send to."), ping_everyone: discord.Option(bool, "Whether to ping @everyone.", default=False)):
-    await ctx.defer(ephemeral=True)
-    content = "@everyone" if ping_everyone else ""
-    embed = discord.Embed(title="📢 Clan Announcement", description=message, color=discord.Color.orange())
-    embed.set_footer(text=f"Message sent by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
-    try:
-        await channel.send(content=content, embed=embed)
-        await ctx.respond("Announcement sent successfully!", ephemeral=True)
-    except discord.Forbidden:
-        await ctx.respond("Error: I don't have permission to send messages in that channel.", ephemeral=True)
-    except Exception as e:
-        await ctx.respond(f"An unexpected error occurred: {e}", ephemeral=True)
-
-@admin.command(name="manage_points", description="Add or remove Clan Points from a member.")
-@discord.default_permissions(manage_guild=True)
-async def manage_points(ctx: discord.ApplicationContext, member: discord.Option(discord.Member, "The member to manage points for."), action: discord.Option(str, "Whether to add or remove points.", choices=["add", "remove"]), amount: discord.Option(int, "The number of points to add or remove.", min_value=1), reason: discord.Option(str, "The reason for this point adjustment.")):
-    await ctx.defer(ephemeral=True)
-    if action == "add":
-        await award_points(member, amount, reason)
-    else: # remove
-        conn = get_db_connection(); cursor = conn.cursor()
-        cursor.execute("INSERT INTO clan_points (discord_id, points) VALUES (%s, 0) ON CONFLICT (discord_id) DO NOTHING", (member.id,))
-        cursor.execute("UPDATE clan_points SET points = GREATEST(0, points - %s) WHERE discord_id = %s", (amount, member.id))
-        conn.commit()
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT points FROM clan_points WHERE discord_id = %s", (member.id,))
-    new_balance = cursor.fetchone()[0]
-    cursor.close(); conn.close()
-    await ctx.respond(f"Successfully updated {member.display_name}'s points. Their new balance is {new_balance}.", ephemeral=True)
-
-@admin.command(name="award_sotw_winners", description="Manually award points for a past SOTW competition.")
-@discord.default_permissions(manage_guild=True)
-async def award_sotw_winners(ctx: discord.ApplicationContext, competition_id: discord.Option(int, "The ID of the competition from Wise Old Man.")):
-    await ctx.defer(ephemeral=True)
-    details_url = f"https://api.wiseoldman.net/v2/competitions/{competition_id}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(details_url) as response:
-            if response.status != 200:
-                return await ctx.respond(f"Could not fetch details for competition ID {competition_id}.")
-            comp_data = await response.json()
-    awarded_to = []
-    point_values = [100, 50, 25]
-    for i, participant in enumerate(comp_data.get('participations', [])[:3]):
-        osrs_name = participant['player']['displayName']
-        conn = get_db_connection(); cursor = conn.cursor()
-        cursor.execute("SELECT discord_id FROM user_links WHERE osrs_name = %s", (osrs_name,))
-        user_data = cursor.fetchone()
-        conn.close()
-        if user_data:
-            member = ctx.guild.get_member(user_data[0])
-            if member:
-                await award_points(member, point_values[i], f"placing #{i+1} in the {comp_data['title']} SOTW")
-                awarded_to.append(f"#{i+1}: {member.display_name} ({point_values[i]} points)")
-    if not awarded_to:
-        return await ctx.respond("No winners could be found or linked for that competition.")
-    await ctx.respond("Successfully awarded points to:\n" + "\n".join(awarded_to))
-@admin.command(name="check_items", description="Check the status of the OSRS item mapping.")
-@discord.default_permissions(manage_guild=True)
-async def check_items(ctx: discord.ApplicationContext):
-    if bot.item_mapping:
-        await ctx.respond(f"✅ The item list is loaded with **{len(bot.item_mapping)}** items.", ephemeral=True)
-    else:
-        await ctx.respond("❌ The item list is not loaded yet. Please check the logs for errors.", ephemeral=True)
-
 giveaway = bot.create_group("giveaway", "Commands for managing giveaways.")
 @giveaway.command(name="start", description="Start a new giveaway.")
 @discord.default_permissions(manage_events=True)
@@ -1457,106 +1463,18 @@ async def view_entries(ctx: discord.ApplicationContext):
         embed.description += f"\n\n{entrants_text}"
     await ctx.respond(embed=embed, ephemeral=True)
 
-osrs = bot.create_group("osrs", "Commands related to your OSRS account.")
-@osrs.command(name="link", description="Link your Discord account to your OSRS username.")
-async def link(ctx: discord.ApplicationContext, username: discord.Option(str, "Your in-game RuneScape name.")):
-    await ctx.defer(ephemeral=True)
-    url = f"https://secure.runescape.com/m=hiscore_oldschool/index_lite.ws?player={username.replace(' ', '_')}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status != 200:
-                return await ctx.respond(f"Could not find '{username}' on the OSRS HiScores.", ephemeral=True)
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("INSERT INTO user_links (discord_id, osrs_name) VALUES (%s, %s) ON CONFLICT (discord_id) DO UPDATE SET osrs_name = EXCLUDED.osrs_name", (ctx.author.id, username))
-    conn.commit(); cursor.close(); conn.close()
-    await ctx.respond(f"Success! Your Discord account has been linked to the OSRS name: **{username}**.", ephemeral=True)
-@osrs.command(name="profile", description="View your or another member's OSRS profile.")
-async def profile(
-    ctx: discord.ApplicationContext,
-    member: discord.Option(discord.Member, "The member to look up (defaults to yourself).", required=False)
-):
-    await ctx.defer()
-
-    target_member = member or ctx.author
-    
-    # 1. Look up the linked OSRS name in our database
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute("SELECT osrs_name FROM user_links WHERE discord_id = %s", (target_member.id,))
-    user_data = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if not user_data:
-        return await ctx.respond(f"{target_member.display_name} has not linked their OSRS account yet. They can do so with `/osrs link`.", ephemeral=True)
-    
-    osrs_name = user_data['osrs_name']
-    
-    # 2. Fetch player data from Wise Old Man API
-    url = f"https://api.wiseoldman.net/v2/players/{osrs_name.replace(' ', '%20')}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status != 200:
-                return await ctx.respond(f"Could not find the player '{osrs_name}' on Wise Old Man. Check the spelling or try updating their profile on the WOM website.", ephemeral=True)
-            
-            player_data = await response.json()
-
-    # 3. Build the profile card embed
-    embed = discord.Embed(
-        title=f"OSRS Profile: {player_data.get('displayName', osrs_name)}",
-        url=f"https://wiseoldman.net/players/{player_data.get('displayName', osrs_name).replace(' ', '%20')}",
-        color=target_member.color
-    )
-    embed.set_thumbnail(url=target_member.display_avatar.url)
-
-    # Main stats
-    combat_level = player_data.get('combatLevel', 0)
-    total_level = player_data['latestSnapshot'].get('data', {}).get('skills', {}).get('overall', {}).get('level', 0)
-    embed.description = f"**Combat Level:** {combat_level}\n**Total Level:** {total_level}"
-    
-    # Combat Skills
-    skills = player_data['latestSnapshot']['data']['skills']
-    combat_skills_text = (
-        f"**Att:** {skills['attack']['level']} | **Str:** {skills['strength']['level']} | **Def:** {skills['defence']['level']} | "
-        f"**HP:** {skills['hitpoints']['level']} | **Rng:** {skills['ranged']['level']} | **Mag:** {skills['magic']['level']} | "
-        f"**Pry:** {skills['prayer']['level']}"
-    )
-    embed.add_field(name="Combat Skills", value=combat_skills_text, inline=False)
-    
-    # Boss Kill Counts
-    bosses = player_data['latestSnapshot']['data']['bosses']
-    boss_kc_text = ""
-    notable_bosses = ["vorkath", "zulrah", "chambers_of_xeric", "tombs_of_amascut"]
-    for boss_name in notable_bosses:
-        if boss_name in bosses and bosses[boss_name]['kills'] > 0:
-            boss_kc_text += f"**{boss_name.replace('_', ' ').title()}:** {bosses[boss_name]['kills']:,}\n"
-
-    if not boss_kc_text:
-        boss_kc_text = "No notable boss KC tracked on WOM."
-        
-    embed.add_field(name="Boss Kills", value=boss_kc_text, inline=True)
-    embed.add_field(name="Clan Role", value=f"{target_member.top_role.name}", inline=True)
-
-    embed.set_footer(text=f"Last updated on Wise Old Man: {datetime.fromisoformat(player_data['updatedAt']).strftime('%Y-%m-%d %H:%M UTC')}")
-    
-    await ctx.respond(embed=embed)
-
 points = bot.create_group("points", "Commands related to Clan Points.")
 @points.command(name="view", description="Check your current Clan Point balance.")
 async def view_points(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
-    if not bot.item_mapping:
-        return await ctx.respond(
-            "The item list is still loading from the server. Please wait a few more seconds and try again.",
-            ephemeral=True
-        )
-
-    conn = get_db_connection(); cursor = conn.cursor()
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute("SELECT points FROM clan_points WHERE discord_id = %s", (ctx.author.id,))
     point_data = cursor.fetchone()
-    cursor.close(); conn.close()
+    cursor.close()
+    conn.close()
     current_points = point_data[0] if point_data else 0
-    await ctx.respond(f"You currently have **{current_points}** Clan Points.", ephemeral=True)
+    await ctx.followup.send(f"You currently have **{current_points}** Clan Points.")
 
 @points.command(name="leaderboard", description="View the Clan Points leaderboard.")
 async def leaderboard(ctx: discord.ApplicationContext):
@@ -1589,19 +1507,25 @@ async def help(ctx: discord.ApplicationContext):
         color=discord.Color.blurple()
     )
     member_commands = """
+    `/ge price` - Check the Grand Exchange price of an item.
+    `/osrs link` - Link your Discord account to your OSRS name.
+    `/osrs profile` - View your linked OSRS account's stats and boss kills.
+    `/points view` - Check your current Clan Point balance.
+    `/points leaderboard` - View the Clan Points leaderboard.
     `/sotw view` - View the leaderboard for the current Skill of the Week.
     `/raffle enter` - Get one ticket for the current raffle (max 10).
     `/raffle view_tickets` - See how many tickets everyone has.
     `/bingo board` - Get a link to the current bingo board.
     `/bingo complete` - Submit a task for bingo completion.
-    `/points view` - Check your current Clan Point balance.
-    `/points leaderboard` - View the Clan Points leaderboard.
     `/pointstore rewards` - See what you can buy with your points.
     `/pointstore redeem` - Spend your points on a reward.
-    `/osrs link` - Link your Discord account to your OSRS name.
     `/events view` - See all currently active events.
     """
     admin_commands = """
+    `/admin announce` - Send a global announcement as the bot.
+    `/admin manage_points` - Add or remove Clan Points from a member.
+    `/admin award_sotw_winners` - Manually award points for a past SOTW.
+    `/admin check_items` - Check if the GE item list has loaded.
     `/sotw start` - Manually start a new SOTW competition.
     `/sotw poll` - Start a poll to choose the next SOTW.
     `/giveaway start` - Start a new giveaway with a prize and duration.
@@ -1616,9 +1540,6 @@ async def help(ctx: discord.ApplicationContext):
     `/pointstore addreward` - Add a new reward to the store.
     `/pointstore removereward` - Remove a reward from the store.
     `/pointstore togglereward` - Activate or deactivate a reward.
-    `/admin announce` - Send a global announcement as the bot.
-    `/admin manage_points` - Add or remove Clan Points from a member.
-    `/admin award_sotw_winners` - Manually award points for a past SOTW.
     """
     embed.add_field(name="✅ Member Commands", value=textwrap.dedent(member_commands), inline=False)
     embed.add_field(name="👑 Admin Commands", value=textwrap.dedent(admin_commands), inline=False)
@@ -1634,13 +1555,13 @@ async def run_bot():
         except discord.errors.HTTPException as e:
             if e.status == 429:
                 print("BOT is being rate-limited by Discord. Retrying in 5 minutes...")
-                await asyncio.sleep(300) # Wait 5 minutes before trying to reconnect
+                await asyncio.sleep(300)
             else:
                 print(f"An unexpected HTTP error occurred with the bot: {e}")
-                break # Exit on other HTTP errors
+                break
         except Exception as e:
             print(f"An unexpected error occurred while running the bot: {e}")
-            break # Exit on other errors
+            break
 
 async def main():
     web_task = asyncio.create_task(start_web_server())
@@ -1649,4 +1570,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
