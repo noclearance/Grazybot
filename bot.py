@@ -17,40 +17,9 @@ import google.generativeai as genai
 from io import BytesIO
 from discord.commands import SlashCommandGroup, Option
 import re
-import google.generativeai as genai
 import urllib.parse as up
 
-import os
-import asyncio
-import discord
-from discord.ext import commands
-from datetime import datetime, timedelta, timezone
-async def main():
-    token = os.getenv("DISCORD_TOKEN")
-    print("Token loaded:", bool(token))
-    intents = discord.Intents.default()
-    intents.message_content = True
-    bot = commands.Bot(command_prefix="!", intents=intents)
-
-    try:
-        await bot.login(token)
-        print("Logged into Discord gateway successfully.")
-    except Exception as e:
-        print("Login error:", e)
-        return
-    try:
-        # Check command sync if using slash
-        synced_commands = await bot.tree.fetch_commands()
-        print(f"Slash commands registered: {len(synced_commands)}")
-    except Exception as e:
-        print("Slash command fetch error:", e)
-    await bot.close()
-
-if __name__ == "_main_":
-    asyncio.run(main())
-
 # --- Configuration & Setup ---
-from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv('TOKEN')
 WOM_CLAN_ID = os.getenv('WOM_CLAN_ID')
@@ -67,7 +36,7 @@ RAFFLE_CHANNEL_ID = int(os.getenv('RAFFLE_CHANNEL_ID'))
 RECAP_CHANNEL_ID = int(os.getenv('RECAP_CHANNEL_ID'))
 ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv('ANNOUNCEMENTS_CHANNEL_ID'))
 GIVEAWAY_CHANNEL_ID = ANNOUNCEMENTS_CHANNEL_ID
-
+# PVM_EVENT_CHANNEL_ID will be added when we build the feature
 
 # Configure the Gemini AI (for text)
 genai.configure(api_key=GEMINI_API_KEY)
@@ -82,7 +51,6 @@ bot.item_mapping = {}
 bot.active_polls = {}
 
 # --- Database Setup ---
-
 def get_db_connection():
     # This new version will correctly parse the DATABASE_URL from Render
     # and explicitly tell the database library to use a secure SSL connection.
@@ -155,11 +123,28 @@ def setup_database():
         user_id BIGINT NOT NULL,
         UNIQUE (message_id, user_id)
     )""")
+    # Tables for PVM Event Scheduler
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pvm_events (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        starts_at TIMESTAMPTZ NOT NULL,
+        message_id BIGINT,
+        channel_id BIGINT,
+        reminder_sent BOOLEAN DEFAULT FALSE
+    )""")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pvm_event_signups (
+        event_id INTEGER REFERENCES pvm_events(id) ON DELETE CASCADE,
+        user_id BIGINT NOT NULL,
+        PRIMARY KEY (event_id, user_id)
+    )""")
     conn.commit()
     cursor.close()
     conn.close()
 
-# --- SOTW Poll View ---
+# --- All View Classes ---
 class SotwPollView(discord.ui.View):
     def __init__(self, author):
         super().__init__(timeout=86400); self.author = author; self.votes = {};
@@ -215,7 +200,6 @@ class FinishButton(discord.ui.Button):
         await interaction.message.edit(view=view)
         bot.active_polls.pop(interaction.guild.id, None)
 
-# --- Bingo Submission View ---
 class SubmissionView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -263,7 +247,6 @@ class SubmissionView(discord.ui.View):
         await interaction.message.delete()
         await interaction.response.send_message(f"Submission #{submission_id} denied.", ephemeral=True)
 
-# --- Giveaway View ---
 class GiveawayView(discord.ui.View):
     def __init__(self, message_id):
         super().__init__(timeout=None)
@@ -586,6 +569,7 @@ async def send_global_announcement(event_type: str, details: dict, message_url: 
     embed.add_field(name="Details", value=f"[Click here to view the event!]({message_url})")
     embed.set_footer(text="A new clan event has started!")
     await announcement_channel.send(content="@everyone", embed=embed)
+
 async def load_item_mapping():
     """Fetches the item name-to-ID mapping from the OSRS Cloud API on startup."""
     url = "https://prices.osrs.cloud/api/v1/latest/mapping"
@@ -622,6 +606,22 @@ def format_price_timestamp(ts: int) -> str:
     else:
         days = delta.days
         return f"{days} day{'s' if days > 1 else ''} ago"
+
+def get_wom_metric_url(metric):
+    """Generates a URL for a specific OSRS Wiki skill/activity icon."""
+    base_url = "https://oldschool.runescape.wiki/images/"
+    # Simple mapping for a few common icons
+    icon_map = {
+        "attack": "Attack_icon.png", "strength": "Strength_icon.png",
+        "defence": "Defence_icon.png", "hitpoints": "Hitpoints_icon.png",
+        "ranged": "Ranged_icon.png", "magic": "Magic_icon.png",
+        "prayer": "Prayer_icon.png", "vorkath": "Vorkath.png",
+        "zulrah": "Zulrah.png", "chambers_of_xeric": "Olmlet.png",
+        "tombs_of_amascut": "Tumeken's_guardian.png"
+    }
+    # Default to a generic icon if not found
+    filename = icon_map.get(metric.lower().replace(" ", "_"), "Coins_10000.png")
+    return f"{base_url}{filename}"
 
 # --- Event Manager & Periodic Reminder Tasks ---
 @tasks.loop(hours=4)
@@ -780,7 +780,7 @@ async def start_web_server():
 @bot.event
 async def on_ready():
     print(f"{bot.user} is online and ready!")
-    await load_item_mapping() 
+    await load_item_mapping()
     setup_database()
     event_manager.start()
     periodic_event_reminder.start()
@@ -798,82 +798,6 @@ async def on_ready():
     print("Giveaway views re-registered.")
 
 # --- BOT COMMANDS ---
-ge = bot.create_group("ge", "Commands for the Grand Exchange.")
-
-async def item_autocomplete(ctx: discord.AutocompleteContext):
-    """Provides autocomplete suggestions for OSRS items."""
-    query = ctx.value.lower()
-    if not query:
-        # Show some popular items if the user hasn't typed anything
-        popular_items = ["Twisted bow", "Scythe of vitur", "Abyssal whip", "Dragon claws"]
-        return popular_items
-        
-    # Find all item names that start with the user's query
-    matches = [
-        name.title() for name in bot.item_mapping.keys()
-        if name.startswith(query)
-    ]
-    # Return the first 25 matches
-    return matches[:25]
-
-@ge.command(name="price", description="Check the Grand Exchange price of an item.")
-async def price(
-    ctx: discord.ApplicationContext,
-    item: discord.Option(str, "The name of the item to check.", autocomplete=item_autocomplete)
-):
-    await ctx.defer()
-    
-    item_name_lower = item.lower()
-    
-    if item_name_lower not in bot.item_mapping:
-        return await ctx.respond("Could not find this item. Please choose one from the list.", ephemeral=True)
-        
-    item_details = bot.item_mapping[item_name_lower]
-    item_id = item_details['id']
-    
-    url = f"https://prices.osrs.cloud/api/v1/latest/item/{item_id}"
-    headers = {'User-Agent': 'GrazyBot/1.0'}
-    
-    async with aiohttp.ClientSession(headers=headers) as session:
-        try:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    return await ctx.respond(f"Error fetching price data (Status: {response.status}). Please try again later.", ephemeral=True)
-                
-                price_data = await response.json()
-                
-                # Create the response embed
-                embed = discord.Embed(
-                    title=f"Price Check: {item_details['name']}",
-                    color=discord.Color.gold(),
-                    timestamp=datetime.now(timezone.utc)
-                )
-                
-                icon_url = item_details.get('icon')
-                if icon_url:
-                    embed.set_thumbnail(url=icon_url)
-
-                buy_price = price_data.get('high', 0)
-                sell_price = price_data.get('low', 0)
-                margin = buy_price - sell_price
-
-                embed.add_field(name="Buy Price (Instant)", value=f"{buy_price:,} gp", inline=True)
-                embed.add_field(name="Sell Price (Instant)", value=f"{sell_price:,} gp", inline=True)
-                embed.add_field(name="Profit Margin", value=f"{margin:,} gp", inline=True)
-
-                buy_time = format_price_timestamp(price_data.get('highTime'))
-                sell_time = format_price_timestamp(price_data.get('lowTime'))
-
-                embed.add_field(name="Last Buy", value=f"Updated {buy_time}", inline=True)
-                embed.add_field(name="Last Sell", value=f"Updated {sell_time}", inline=True)
-
-                embed.set_footer(text="Price data from osrs.cloud")
-
-                await ctx.respond(embed=embed)
-
-        except Exception as e:
-            print(f"Error in /ge price command: {e}")
-            await ctx.respond("An unexpected error occurred while fetching price data.", ephemeral=True)
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
 @sotw.command(name="start", description="Manually start a new SOTW competition.")
 async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_days: discord.Option(int, default=7)):
@@ -1030,13 +954,6 @@ async def view_tickets(ctx: discord.ApplicationContext):
                 continue # Skip if member left the server
         embed.description = description
     await ctx.respond(embed=embed)
-@admin.command(name="check_items", description="Check the status of the OSRS item mapping.")
-@discord.default_permissions(manage_guild=True)
-async def check_items(ctx: discord.ApplicationContext):
-    if bot.item_mapping:
-        await ctx.respond(f"✅ The item list is loaded with **{len(bot.item_mapping)}** items.", ephemeral=True)
-    else:
-        await ctx.respond("❌ The item list is not loaded yet. Please check the logs for errors.", ephemeral=True)
 
 @raffle.command(name="draw_now", description="ADMIN: Immediately ends the raffle and draws a winner.")
 @discord.default_permissions(manage_events=True)
@@ -1461,6 +1378,13 @@ async def award_sotw_winners(ctx: discord.ApplicationContext, competition_id: di
     if not awarded_to:
         return await ctx.respond("No winners could be found or linked for that competition.")
     await ctx.respond("Successfully awarded points to:\n" + "\n".join(awarded_to))
+@admin.command(name="check_items", description="Check the status of the OSRS item mapping.")
+@discord.default_permissions(manage_guild=True)
+async def check_items(ctx: discord.ApplicationContext):
+    if bot.item_mapping:
+        await ctx.respond(f"✅ The item list is loaded with **{len(bot.item_mapping)}** items.", ephemeral=True)
+    else:
+        await ctx.respond("❌ The item list is not loaded yet. Please check the logs for errors.", ephemeral=True)
 
 giveaway = bot.create_group("giveaway", "Commands for managing giveaways.")
 @giveaway.command(name="start", description="Start a new giveaway.")
@@ -1546,11 +1470,87 @@ async def link(ctx: discord.ApplicationContext, username: discord.Option(str, "Y
     cursor.execute("INSERT INTO user_links (discord_id, osrs_name) VALUES (%s, %s) ON CONFLICT (discord_id) DO UPDATE SET osrs_name = EXCLUDED.osrs_name", (ctx.author.id, username))
     conn.commit(); cursor.close(); conn.close()
     await ctx.respond(f"Success! Your Discord account has been linked to the OSRS name: **{username}**.", ephemeral=True)
+@osrs.command(name="profile", description="View your or another member's OSRS profile.")
+async def profile(
+    ctx: discord.ApplicationContext,
+    member: discord.Option(discord.Member, "The member to look up (defaults to yourself).", required=False)
+):
+    await ctx.defer()
+
+    target_member = member or ctx.author
+    
+    # 1. Look up the linked OSRS name in our database
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cursor.execute("SELECT osrs_name FROM user_links WHERE discord_id = %s", (target_member.id,))
+    user_data = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not user_data:
+        return await ctx.respond(f"{target_member.display_name} has not linked their OSRS account yet. They can do so with `/osrs link`.", ephemeral=True)
+    
+    osrs_name = user_data['osrs_name']
+    
+    # 2. Fetch player data from Wise Old Man API
+    url = f"https://api.wiseoldman.net/v2/players/{osrs_name.replace(' ', '%20')}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            if response.status != 200:
+                return await ctx.respond(f"Could not find the player '{osrs_name}' on Wise Old Man. Check the spelling or try updating their profile on the WOM website.", ephemeral=True)
+            
+            player_data = await response.json()
+
+    # 3. Build the profile card embed
+    embed = discord.Embed(
+        title=f"OSRS Profile: {player_data.get('displayName', osrs_name)}",
+        url=f"https://wiseoldman.net/players/{player_data.get('displayName', osrs_name).replace(' ', '%20')}",
+        color=target_member.color
+    )
+    embed.set_thumbnail(url=target_member.display_avatar.url)
+
+    # Main stats
+    combat_level = player_data.get('combatLevel', 0)
+    total_level = player_data['latestSnapshot'].get('data', {}).get('skills', {}).get('overall', {}).get('level', 0)
+    embed.description = f"**Combat Level:** {combat_level}\n**Total Level:** {total_level}"
+    
+    # Combat Skills
+    skills = player_data['latestSnapshot']['data']['skills']
+    combat_skills_text = (
+        f"**Att:** {skills['attack']['level']} | **Str:** {skills['strength']['level']} | **Def:** {skills['defence']['level']} | "
+        f"**HP:** {skills['hitpoints']['level']} | **Rng:** {skills['ranged']['level']} | **Mag:** {skills['magic']['level']} | "
+        f"**Pry:** {skills['prayer']['level']}"
+    )
+    embed.add_field(name="Combat Skills", value=combat_skills_text, inline=False)
+    
+    # Boss Kill Counts
+    bosses = player_data['latestSnapshot']['data']['bosses']
+    boss_kc_text = ""
+    notable_bosses = ["vorkath", "zulrah", "chambers_of_xeric", "tombs_of_amascut"]
+    for boss_name in notable_bosses:
+        if boss_name in bosses and bosses[boss_name]['kills'] > 0:
+            boss_kc_text += f"**{boss_name.replace('_', ' ').title()}:** {bosses[boss_name]['kills']:,}\n"
+
+    if not boss_kc_text:
+        boss_kc_text = "No notable boss KC tracked on WOM."
+        
+    embed.add_field(name="Boss Kills", value=boss_kc_text, inline=True)
+    embed.add_field(name="Clan Role", value=f"{target_member.top_role.name}", inline=True)
+
+    embed.set_footer(text=f"Last updated on Wise Old Man: {datetime.fromisoformat(player_data['updatedAt']).strftime('%Y-%m-%d %H:%M UTC')}")
+    
+    await ctx.respond(embed=embed)
 
 points = bot.create_group("points", "Commands related to Clan Points.")
 @points.command(name="view", description="Check your current Clan Point balance.")
 async def view_points(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
+    if not bot.item_mapping:
+        return await ctx.respond(
+            "The item list is still loading from the server. Please wait a few more seconds and try again.",
+            ephemeral=True
+        )
+
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT points FROM clan_points WHERE discord_id = %s", (ctx.author.id,))
     point_data = cursor.fetchone()
@@ -1649,3 +1649,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+}
