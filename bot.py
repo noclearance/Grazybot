@@ -1556,12 +1556,23 @@ async def give_tickets(ctx: discord.ApplicationContext, member: discord.Option(d
         return await ctx.respond("There is no active raffle.", ephemeral=True)
 
     entries = [(member.id, 'admin_award') for _ in range(amount)] # Use 'admin_award' as source
-  await execute_db_query(
-    "INSERT INTO raffle_entries (user_id, source) VALUES %s",
-    entries, # No longer needs to be in a tuple
-    commit=True,
-    use_execute_values=True
-)
+    
+    # This is the corrected call from the last fix
+    await execute_db_query(
+        "INSERT INTO raffle_entries (user_id, source) VALUES %s",
+        entries,
+        commit=True,
+        use_execute_values=True
+    )
+
+    # This block is now correctly indented
+    total_tickets_count = await execute_db_query(
+        "SELECT COUNT(*) FROM raffle_entries WHERE user_id = %s",
+        (member.id,), fetchone=True
+    )
+    total_tickets = total_tickets_count[0] if total_tickets_count else 0
+    await ctx.respond(f"Successfully gave {amount} ticket(s) to {member.display_name}. They now have {total_tickets} ticket(s).", ephemeral=True)
+    logger.info(f"Admin {ctx.author.display_name} gave {amount} tickets to {member.display_name}. New total: {total_tickets}.")
 
     total_tickets_count = await execute_db_query(
         "SELECT COUNT(*) FROM raffle_entries WHERE user_id = %s",
@@ -1588,13 +1599,18 @@ async def edit_tickets(ctx: discord.ApplicationContext, member: discord.Option(d
     )
     if new_total > 0:
         entries = [(member.id, 'admin_edit') for _ in range(new_total)]
-await execute_db_query(
-    "INSERT INTO raffle_entries (user_id, source) VALUES %s",
-    entries, # No longer needs to be in a tuple
-    commit=True,
-    use_execute_values=True
-)
+        
+        # This is the corrected call from the last fix
+        await execute_db_query(
+            "INSERT INTO raffle_entries (user_id, source) VALUES %s",
+            entries,
+            commit=True,
+            use_execute_values=True
+        )
+        
+    # This block is now correctly indented
     await ctx.respond(f"Successfully set {member.display_name}'s ticket count to {new_total}.", ephemeral=True)
+    logger.info(f"Admin {ctx.author.display_name} set {member.display_name}'s tickets to {new_total}.")    await ctx.respond(f"Successfully set {member.display_name}'s ticket count to {new_total}.", ephemeral=True)
     logger.info(f"Admin {ctx.author.display_name} set {member.display_name}'s tickets to {new_total}.")
 
 @raffle.command(name="view_tickets", description="View the current ticket count for all participants.")
