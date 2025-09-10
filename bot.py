@@ -57,7 +57,7 @@ PERSONA_PROMPT = """
 You are TaskmasterGPT, the grandmaster of clan events for a Discord server.
 Your tone is epic, engaging, slightly cheeky, and highly detailed. You are here to build excitement, rally the members with compelling narratives, and provide all necessary information with flair.
 Your task is to generate a JSON object for a Discord embed with "title", "description", and "color" keys.
-Use vivid language and Discord markdown like **bold** or *italics*. you can when use emojis if necessary or as applies.
+Use vivid language and Discord markdown like **bold** or *italics*. you can when use emojis if necessary or as applies/
 Make every announcement sound like a legendary event is unfolding, providing rich, descriptive text for the "description" field. Aim for a few sentences or a short paragraph for the description, not just one short line.
 """
 
@@ -103,15 +103,23 @@ def run_sync_db_op(func):
         return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
     return wrapper
 
+# Replace your existing _sync_execute_db_query function with this one
+
 @run_sync_db_op
-def _sync_execute_db_query(query, params=None, fetchone=False, fetchall=False, commit=False, cursor_factory=None):
+def _sync_execute_db_query(query, params=None, fetchone=False, fetchall=False, commit=False, cursor_factory=None, use_execute_values=False):
     """Synchronous function to execute a database query from the pool."""
     conn = None
     cursor = None
     try:
         conn = get_db_pool().getconn()
         cursor = conn.cursor(cursor_factory=cursor_factory)
-        cursor.execute(query, params)
+        
+        # ADDED THIS LOGIC BLOCK
+        if use_execute_values:
+            extras.execute_values(cursor, query, params)
+        else:
+            cursor.execute(query, params)
+            
         if commit:
             conn.commit()
         if fetchone:
@@ -130,9 +138,11 @@ def _sync_execute_db_query(query, params=None, fetchone=False, fetchall=False, c
         if conn:
             get_db_pool().putconn(conn)
 
-async def execute_db_query(query, params=None, fetchone=False, fetchall=False, commit=False, cursor_factory=None):
+# Replace your existing execute_db_query function with this one
+async def execute_db_query(query, params=None, fetchone=False, fetchall=False, commit=False, cursor_factory=None, use_execute_values=False):
     """Asynchronous wrapper for database queries."""
-    return await _sync_execute_db_query(query, params, fetchone, fetchall, commit, cursor_factory)
+    return await _sync_execute_db_query(query, params, fetchone, fetchall, commit, cursor_factory, use_execute_values)
+
 
 async def setup_database():
     """Initializes the database schema."""
@@ -1546,10 +1556,12 @@ async def give_tickets(ctx: discord.ApplicationContext, member: discord.Option(d
         return await ctx.respond("There is no active raffle.", ephemeral=True)
 
     entries = [(member.id, 'admin_award') for _ in range(amount)] # Use 'admin_award' as source
-    await execute_db_query(
-        "INSERT INTO raffle_entries (user_id, source) VALUES %s",
-        (entries,), commit=True, extras.execute_values
-    )
+  await execute_db_query(
+    "INSERT INTO raffle_entries (user_id, source) VALUES %s",
+    entries, # No longer needs to be in a tuple
+    commit=True,
+    use_execute_values=True
+)
 
     total_tickets_count = await execute_db_query(
         "SELECT COUNT(*) FROM raffle_entries WHERE user_id = %s",
@@ -1576,10 +1588,12 @@ async def edit_tickets(ctx: discord.ApplicationContext, member: discord.Option(d
     )
     if new_total > 0:
         entries = [(member.id, 'admin_edit') for _ in range(new_total)]
-        await execute_db_query(
-            "INSERT INTO raffle_entries (user_id, source) VALUES %s",
-            (entries,), commit=True, extras.execute_values
-        )
+await execute_db_query(
+    "INSERT INTO raffle_entries (user_id, source) VALUES %s",
+    entries, # No longer needs to be in a tuple
+    commit=True,
+    use_execute_values=True
+)
     await ctx.respond(f"Successfully set {member.display_name}'s ticket count to {new_total}.", ephemeral=True)
     logger.info(f"Admin {ctx.author.display_name} set {member.display_name}'s tickets to {new_total}.")
 
