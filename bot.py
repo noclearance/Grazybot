@@ -18,7 +18,15 @@ from io import BytesIO
 from discord.commands import SlashCommandGroup, Option
 import re
 import urllib.parse as up
-from supabase import supabase
+from supabase import create_client, Client
+import os
+
+# Get your Supabase credentials from environment variables
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Create the Supabase client instance
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # --- Configuration & Setup ---
