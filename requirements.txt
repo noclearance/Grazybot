@@ -6,3 +6,4 @@ google-generativeai
 Pillow
 PyNaCl
 psycopg2-binary==2.9.7
+supabase
