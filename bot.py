@@ -18,6 +18,8 @@ from io import BytesIO
 from discord.commands import SlashCommandGroup, Option
 import re
 import urllib.parse as up
+from supabase import supabase
+
 
 # --- Configuration & Setup ---
 load_dotenv()
