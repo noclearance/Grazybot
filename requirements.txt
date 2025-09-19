@@ -1,9 +1,23 @@
-asyncio
-aiohttp==3.9.5
-py-cord==2.6.0
-python-dotenv
-google-generativeai
-Pillow
-PyNaCl
-psycopg2-binary==2.9.7
+# requirements.txt
+
+# Core
+requests
+urllib3
+
+# Wise Old Man API helpers
+aiohttp
+aiosignal
+frozenlist
+multidict
+charset-normalizer
+attrs
+yarl
+propcache
+aiohappyeyeballs
+
+# Database
+psycopg2-binary9
 supabase
+
+# Extras / useful tooling
+python-dotenv
