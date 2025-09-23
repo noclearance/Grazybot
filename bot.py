@@ -202,6 +202,10 @@ async def setup_database_pool():
                 PRIMARY KEY (event_id, user_id)
             )""")
             await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)
+            """)
+            await conn.execute("INSERT INTO bot_settings (key, value) VALUES ('last_recap_sent', $1) ON CONFLICT (key) DO NOTHING", datetime.min.replace(tzinfo=timezone.utc).isoformat())
+            await conn.execute("""
             CREATE TABLE IF NOT EXISTS boss_pbs (
                 discord_id BIGINT NOT NULL,
                 boss_name TEXT NOT NULL,
@@ -287,7 +291,8 @@ class FinishButton(discord.ui.Button):
         bot.active_polls.pop(interaction.guild.id, None)
 
 class SubmissionView(discord.ui.View):
-    def __init__(self):n        super().__init__(timeout=None)
+    def __init__(self):
+        super().__init__(timeout=None)
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="approve_submission")
     async def approve_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -323,7 +328,7 @@ class GiveawayView(discord.ui.View):
         super().__init__(timeout=None)
         self.message_id = message_id
 
-    @discord.ui.button(label="\ud83c\udf89 Enter Giveaway", style=discord.ButtonStyle.primary, custom_id="giveaway_entry_button")
+    @discord.ui.button(label="\n\n\nEnter Giveaway", style=discord.ButtonStyle.primary, custom_id="giveaway_entry_button")
     async def enter_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         async with bot.db_pool.acquire() as conn:
             try:
@@ -344,7 +349,7 @@ class PvmEventView(discord.ui.View):
         super().__init__(timeout=None)
         self.event_id = event_id
 
-    @discord.ui.button(label="\u2705 Sign Up", style=discord.ButtonStyle.success, custom_id="pvm_signup_button")
+    @discord.ui.button(label="\n\n\n Sign Up", style=discord.ButtonStyle.success, custom_id="pvm_signup_button")
     async def signup_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         async with bot.db_pool.acquire() as conn:
             try:
@@ -359,7 +364,7 @@ class PvmEventView(discord.ui.View):
                 print(f"Error signing up for PVM event: {e}")
                 await interaction.response.send_message("An error occurred while signing up for the event.", ephemeral=True)
     
-    @discord.ui.button(label="\u274c Withdraw", style=discord.ButtonStyle.danger, custom_id="pvm_withdraw_button")
+    @discord.ui.button(label="\n\n\n Withdraw", style=discord.ButtonStyle.danger, custom_id="pvm_withdraw_button")
     async def withdraw_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         async with bot.db_pool.acquire() as conn:
             try:
@@ -455,7 +460,7 @@ async def create_competition_embed(data, author, poll_winner=False):
     embed = discord.Embed.from_dict(ai_embed_data)
     embed.url = f"https://wiseoldman.net/competitions/{comp_id}"
     start_dt = datetime.fromisoformat(comp['startsAt'].replace('Z', '+00:00')); end_dt = datetime.fromisoformat(comp['endsAt'].replace('Z', '+00:00'))
-    embed.add_field(name="Skill", value=comp['metric'].capitalize(), inline=True); embed.add_field(name="Duration", value=f"{(end_dt - start_dt).days} days", inline=True); embed.add_field(name="\u200b", value="\u200b", inline=True); embed.add_field(name="Start Time", value=f"<t:{int(start_dt.timestamp())}:F>", inline=True); embed.add_field(name="End Time", value=f"<t:{int(end_dt.timestamp())}:F>", inline=True)
+    embed.add_field(name="Skill", value=comp['metric'].capitalize(), inline=True); embed.add_field(name="Duration", value=f"{(end_dt - start_dt).days} days", inline=True); embed.add_field(name="\n\n", value="\n\n", inline=True); embed.add_field(name="Start Time", value=f"<t:{int(start_dt.timestamp())}:F>", inline=True); embed.add_field(name="End Time", value=f"<t:{int(end_dt.timestamp())}:F>", inline=True)
     embed.set_footer(text=f"Competition started by {author.display_name}", icon_url=author.display_avatar.url)
     return embed
 
@@ -474,14 +479,14 @@ async def generate_recap_text(gains_data: list):
 
 # Define fallbacks globally or in a separate configuration module
 EMBED_FALLBACKS = {
-    "sotw_poll": {"title": "\ud83d\udcca A Council of Skills is Convened!", "description": "The time has come, warriors! The council is convened to determine our next great trial. Which skill shall we dedicate ourselves to mastering in the coming week? Lend your voice and cast your vote below, for your decision holds the power to shape our destiny and focus our collective might!", "color": 15105600},
-    "sotw_start": {"title": "\u2694\ufe0f The Trial of {skill} Begins! \u2694\ufe0f", "description": "Hark, warriors! The clan has spoken, and the gauntlet is thrown! A grand trial of **{skill}** commences now, a test of endurance and mastery. Dedicate yourselves to the grind, for the gods of skill observe! Prove your worth, rise through the ranks, and claim the champion's glory that awaits the victor!", "color": 5763719},
-    "raffle_start": {"title": "\ud83c\udf9f\ufe0f Fortune's Favor is Upon Us!", "description": "Tremble before the whims of fate! The gods of chance have smiled upon our clan, bestowing upon us a grand raffle! A magnificent prize of **{prize}** is at stake, a treasure worthy of legends. To claim your chance at this boon, simply utter the ancient command: `/raffle enter`. Your ticket to destiny awaits!", "color": 15844367},
-    "giveaway_start": {"title": "\ud83c\udf81 A Gift to the Worthy! \ud83c\udf81", "description": "To honor your dedication, a new giveaway has commenced! Press the button below for a chance to claim the prize of **{prize}**!", "color": 3066993},
-    "bingo_start": {"title": "\ud83e\udde9 The Taskmaster's Gauntlet is Thrown! \ud83e\udde9", "description": "Behold, warriors! The Taskmaster has unveiled a new challenge, a complex tapestry of trials designed to test the full breadth of your abilities! The clan bingo board awaits, filled with unique tasks that demand versatility and teamwork. Step forth, examine the challenges, and prove your mastery!", "color": 11027200},
-    "points_award": {"title": "\ud83c\udfc6 Your Renown Grows!", "description": "Hark! For your commendable dedication in *{reason}*, your standing within the clan has increased! You have been awarded a significant **{amount} Clan Points**! These points are a testament to your growing renown and can be exchanged for powerful boons and legendary artifacts within the clan's esteemed point store. Well done, warrior!", "color": 5763719},
-    "pvm_event_start": {"title": "\ud83d\udde1\ufe0f A Call to Arms: {title}! \ud83d\udde1\ufe0f", "description": "Hear ye, hear ye! The time for battle is nigh! A new PVM event, **{title}**, has been declared! On <t:{start_time_unix}:F>, we shall embark on {description_text}. Gather your gear, sharpen your blades, and sign up below to join the ranks of heroes!", "color": 16711680},
-    "default": {"title": "\ud83c\udf89 A New Calling!", "description": "A new event has begun! Answer the call.", "color": 3447003}
+    "sotw_poll": {"title": "\n\n A Council of Skills is Convened!", "description": "The time has come, warriors! The council is convened to determine our next great trial. Which skill shall we dedicate ourselves to mastering in the coming week? Lend your voice and cast your vote below, for your decision holds the power to shape our destiny and focus our collective might!", "color": 15105600},
+    "sotw_start": {"title": "\n\n The Trial of {skill} Begins! \n\n", "description": "Hark, warriors! The clan has spoken, and the gauntlet is thrown! A grand trial of **{skill}** commences now, a test of endurance and mastery. Dedicate yourselves to the grind, for the gods of skill observe! Prove your worth, rise through the ranks, and claim the champion's glory that awaits the victor!", "color": 5763719},
+    "raffle_start": {"title": "\n\n Fortune's Favor is Upon Us!", "description": "Tremble before the whims of fate! The gods of chance have smiled upon our clan, bestowing upon us a grand raffle! A magnificent prize of **{prize}** is at stake, a treasure worthy of legends. To claim your chance at this boon, simply utter the ancient command: `/raffle enter`. Your ticket to destiny awaits!", "color": 15844367},
+    "giveaway_start": {"title": "\n\n A Gift to the Worthy! \n\n", "description": "To honor your dedication, a new giveaway has commenced! Press the button below for a chance to claim the prize of **{prize}**!", "color": 3066993},
+    "bingo_start": {"title": "\n\n The Taskmaster's Gauntlet is Thrown! \n\n", "description": "Behold, warriors! The Taskmaster has unveiled a new challenge, a complex tapestry of trials designed to test the full breadth of your abilities! The clan bingo board awaits, filled with unique tasks that demand versatility and teamwork. Step forth, examine the challenges, and prove your mastery!", "color": 11027200},
+    "points_award": {"title": "\n\n Your Renown Grows!", "description": "Hark! For your commendable dedication in *{reason}*, your standing within the clan has increased! You have been awarded a significant **{amount} Clan Points**! These points are a testament to your growing renown and can be exchanged for powerful boons and legendary artifacts within the clan's esteemed point store. Well done, warrior!", "color": 5763719},
+    "pvm_event_start": {"title": "\n\n A Call to Arms: {title}! \n\n", "description": "Hear ye, hear ye! The time for battle is nigh! A new PVM event, **{title}**, has been declared! On <t:{start_time_unix}:F>, we shall embark on {description_text}. Gather your gear, sharpen your blades, and sign up below to join the ranks of heroes!", "color": 16711680},
+    "default": {"title": "\n\n A New Calling!", "description": "A new event has begun! Answer the call.", "color": 3447003}
 }
 
 async def generate_announcement_json(event_type: str, details: dict = None) -> dict:
@@ -549,7 +554,7 @@ async def draw_raffle_winner(raffle_channel: discord.TextChannel):
             winner_user = await bot.fetch_user(winner_id)
             await award_points(winner_user, 50, f"winning the raffle for {prize}")
             
-            raffle_embed = discord.Embed(title="\ud83c\udf89 Raffle Winner Announcement! \ud83c\udf89", description=f"The fates have chosen! Congratulations to {winner_user.mention}, you have won the raffle!", color=discord.Color.fuchsia())
+            raffle_embed = discord.Embed(title="\n\n Raffle Winner Announcement! \n\n", description=f"The fates have chosen! Congratulations to {winner_user.mention}, you have won the raffle!", color=discord.Color.fuchsia())
             raffle_embed.add_field(name="Prize", value=f"**{prize}**", inline=False)
             raffle_embed.set_footer(text=f"Raffle ID: {raffle_id} | Thanks to everyone for participating!")
             raffle_embed.set_thumbnail(url=winner_user.display_avatar.url)
@@ -557,7 +562,7 @@ async def draw_raffle_winner(raffle_channel: discord.TextChannel):
             
             announcements_channel = bot.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
             if announcements_channel:
-                announcement_embed = discord.Embed(title="\ud83c\udfc6 A Champion of Fortune! \ud83c\udfc6", description=f"Let the entire clan celebrate! {winner_user.mention} has emerged victorious in the recent test of luck.", color=discord.Color.gold())
+                announcement_embed = discord.Embed(title="\n\n A Champion of Fortune! \n\n", description=f"Let the entire clan celebrate! {winner_user.mention} has emerged victorious in the recent test of luck.", color=discord.Color.gold())
                 announcement_embed.add_field(name="Prize Claimed", value=f"The grand prize of **{prize}** is now theirs!", inline=False)
                 announcement_embed.add_field(name="Bonus Reward", value="For this victory, they have also been granted **50 Clan Points**!", inline=False)
                 announcement_embed.set_thumbnail(url=winner_user.display_avatar.url)
@@ -588,7 +593,7 @@ async def end_giveaway(giveaway_data):
     except discord.NotFound:
         message = None
     if not user_ids:
-        no_entries_embed = discord.Embed(title="\ud83c\udf81 Giveaway Ended", description=f"The giveaway for **{prize}** has ended, but there were no entries.", color=discord.Color.dark_grey())
+        no_entries_embed = discord.Embed(title="\n\n Giveaway Ended", description=f"The giveaway for **{prize}** has ended, but there were no entries.", color=discord.Color.dark_grey())
         await channel.send(embed=no_entries_embed)
         if message: await message.edit(view=None)
         return
@@ -596,7 +601,7 @@ async def end_giveaway(giveaway_data):
     winner_ids = random.sample(user_ids, k=num_to_select)
     winner_mentions = [f"<@{winner_id}>" for winner_id in winner_ids]
     win_str = "Winner" if len(winner_mentions) == 1 else "Winners"
-    announcement_embed = discord.Embed(title=f"\ud83c\udf89 Giveaway {win_str}! \ud83c\udf89", description=f"Congratulations to {', '.join(winner_mentions)}! You have won the giveaway!", color=discord.Color.gold())
+    announcement_embed = discord.Embed(title=f"\n\n Giveaway {win_str}! \n\n", description=f"Congratulations to {', '.join(winner_mentions)}! You have won the giveaway!", color=discord.Color.gold())
     announcement_embed.add_field(name="Prize", value=f"**{prize}**", inline=False)
     role_to_award = guild.get_role(role_id) if role_id else None
     if role_to_award:
@@ -610,7 +615,7 @@ async def end_giveaway(giveaway_data):
     await channel.send(content=f"Congratulations {', '.join(winner_mentions)}!", embed=announcement_embed)
     if message:
         ended_embed = message.embeds[0]
-        ended_embed.title = "\ud83c\udf81 Giveaway Ended \ud83c\udf81"
+        ended_embed.title = "\n\n Giveaway Ended \n\n"
         ended_embed.color = discord.Color.dark_red()
         field_indices_to_remove = []
         for i, field in enumerate(ended_embed.fields):
@@ -803,7 +808,7 @@ async def periodic_event_reminder():
     try:
         response = await ai_model.generate_content_async(prompt)
         description = response.text
-        embed = discord.Embed(title="\ud83d\udcdc The Taskmaster's Bulletin \ud83d\udcdc", description=description, color=discord.Color.dark_gold())
+        embed = discord.Embed(title="\n\n The Taskmaster's Bulletin \n\n", description=description, color=discord.Color.dark_gold())
         embed.set_footer(text="Seize the day, warriors!")
         await announcements_channel.send(embed=embed)
     except Exception as e:
@@ -816,16 +821,46 @@ async def event_manager():
     recap_channel = bot.get_channel(RECAP_CHANNEL_ID)
 
     # Weekly Recap (Sunday 7 PM UTC)
-    if recap_channel and now.weekday() == 6 and now.hour == 19 and now.minute < 5:
-        url = f"https://api.wiseoldman.net/v2/groups/{WOM_CLAN_ID}/gained?period=week&metric=overall"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    recap_text = await generate_recap_text(data)
-                    embed = discord.Embed(title="\ud83d\udcc8 Weekly Recap from the Taskmaster", description=recap_text, color=discord.Color.from_rgb(100, 150, 255))
-                    embed.set_footer(text=f"Recap for the week ending {now.strftime('%B %d, %Y')}")
-                    await recap_channel.send(embed=embed)
+    if recap_channel:
+        async with bot.db_pool.acquire() as conn_recap:
+            last_recap_timestamp_str = await conn_recap.fetchval("SELECT value FROM bot_settings WHERE key = 'last_recap_sent'")
+            last_recap_dt = datetime.fromisoformat(last_recap_timestamp_str) if last_recap_timestamp_str else datetime.min.replace(tzinfo=timezone.utc)
+            
+            # Calculate the most recent past or current Sunday 7 PM UTC
+            recap_trigger_time = now.replace(hour=19, minute=0, second=0, microsecond=0)
+            
+            # If current time is before Sunday 7 PM, or it's not Sunday at all,
+            # then the `recap_trigger_time` is referring to a *future* Sunday or incorrect day.
+            # Adjust it to the *previous* Sunday 7 PM.
+            if now.weekday() != 6 or now < recap_trigger_time:
+                # Calculate days to subtract to get to the previous Sunday (Sunday is weekday 6)
+                # (now.weekday() - 6 + 7) % 7 will be 0 for Sunday, 1 for Monday, etc.
+                days_to_subtract_for_last_sunday = (now.weekday() - 6 + 7) % 7 
+                recap_trigger_time = (now - timedelta(days=days_to_subtract_for_last_sunday)).replace(hour=19, minute=0, second=0, microsecond=0)
+                
+                # If the current time is still before `recap_trigger_time` (e.g., if we're on a Monday and `recap_trigger_time` was computed as the *next* Sunday),
+                # we need to push it back another week to ensure `recap_trigger_time` is always the *most recent passed or current* Sunday 7 PM UTC.
+                if now < recap_trigger_time:
+                    recap_trigger_time -= timedelta(weeks=1)
+
+            # Check if we should run the recap:
+            # 1. Is the current time past the trigger time for this week's recap? (`now >= recap_trigger_time`)
+            # 2. Was the last recap sent *before* this week's trigger time? (`last_recap_dt < recap_trigger_time`)
+            if now >= recap_trigger_time and last_recap_dt < recap_trigger_time:
+                url = f"https://api.wiseoldman.net/v2/groups/{WOM_CLAN_ID}/gained?period=week&metric=overall"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            recap_text = await generate_recap_text(data)
+                            embed = discord.Embed(title="\n\n Weekly Recap from the Taskmaster", description=recap_text, color=discord.Color.from_rgb(100, 150, 255))
+                            embed.set_footer(text=f"Recap for the week ending {now.strftime('%B %d, %Y')}")
+                            await recap_channel.send(embed=embed)
+                            
+                            # Update the last recap sent timestamp
+                            await conn_recap.execute("INSERT INTO bot_settings (key, value) VALUES ('last_recap_sent', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", now.isoformat())
+                        else:
+                            print(f"Error fetching WOM data for weekly recap: {response.status}")
     
     # --- SOTW Processing ---
     sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
@@ -866,11 +901,11 @@ async def event_manager():
                 
                 # Send reminders (ensure await before DB update)
                 if not comp['final_ping_sent'] and (ends_at - now) <= timedelta(hours=1):
-                    reminder_embed = discord.Embed(title="\u23f0 Final Hour!", description=f"The **{comp['title']}** competition ends in less than an hour!", color=discord.Color.red(), url=f"https://wiseoldman.net/competitions/{comp['id']}")
+                    reminder_embed = discord.Embed(title="\n\n Final Hour!", description=f"The **{comp['title']}** competition ends in less than an hour!", color=discord.Color.red(), url=f"https://wiseoldman.net/competitions/{comp['id']}")
                     await sotw_channel.send(content="@everyone", embed=reminder_embed)
                     await conn.execute("UPDATE active_competitions SET final_ping_sent = TRUE WHERE id = $1", comp['id'])
                 elif not comp['midway_ping_sent'] and now >= starts_at + ((ends_at - starts_at) / 2):
-                    midway_embed = discord.Embed(title="\u00bd Midway Point Reached!", description=f"The **{comp['title']}** competition is halfway through!", color=discord.Color.yellow(), url=f"https://wiseoldman.net/competitions/{comp['id']}")
+                    midway_embed = discord.Embed(title="\n\n Midway Point Reached!", description=f"The **{comp['title']}** competition is halfway through!", color=discord.Color.yellow(), url=f"https://wiseoldman.net/competitions/{comp['id']}")
                     await sotw_channel.send(embed=midway_embed)
                     await conn.execute("UPDATE active_competitions SET midway_ping_sent = TRUE WHERE id = $1", comp['id'])
         
@@ -905,7 +940,7 @@ async def event_manager():
                         entry_field_index = i
                         break
                 
-                new_entry_value = f"\ud83d\udc65 **Entries:** {entry_count}"
+                new_entry_value = f"\n\n **Entries:** {entry_count}"
                 
                 if entry_field_index != -1:
                     if embed.fields[entry_field_index].value != new_entry_value:
@@ -931,7 +966,7 @@ async def event_manager():
                 if event['starts_at'] > now:
                     # Send 1-hour reminder
                     event_embed = discord.Embed(
-                        title=f"\u23f0 PVM Event Reminder: {event['title']}",
+                        title=f"\n\n PVM Event Reminder: {event['title']}",
                         description=f"Our grand expedition to '{event['title']}' begins in less than an hour! Gather your comrades, prepare your gear, and brace yourselves for adventure!\n\nStarts: <t:{int(event['starts_at'].timestamp())}:R>\n[Event Details]({event['message_id']})",
                         color=discord.Color.orange()
                     )
@@ -971,7 +1006,6 @@ async def on_ready():
     
     event_manager.start()
     periodic_event_reminder.start()
-    bot.add_view(SubmissionView())
 
     # Re-register persistent views for giveaways
     async with bot.db_pool.acquire() as conn:
@@ -998,7 +1032,7 @@ admin = bot.create_group("admin", "Admin-only commands for managing the bot and 
 async def announce(ctx: discord.ApplicationContext, message: discord.Option(str, "The message to send."), channel: discord.Option(discord.TextChannel, "The channel to send to."), ping_everyone: discord.Option(bool, "Whether to ping @everyone.", default=False)):
     await ctx.defer(ephemeral=True)
     content = "@everyone" if ping_everyone else ""
-    embed = discord.Embed(title="\ud83d\udce2 Clan Announcement", description=message, color=discord.Color.orange())
+    embed = discord.Embed(title="\n\n Clan Announcement", description=message, color=discord.Color.orange())
     embed.set_footer(text=f"Message sent by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
     try:
         await channel.send(content=content, embed=embed)
@@ -1050,9 +1084,9 @@ async def award_sotw_winners(ctx: discord.ApplicationContext, competition_id: di
 @discord.default_permissions(manage_guild=True)
 async def check_items(ctx: discord.ApplicationContext):
     if bot.item_mapping:
-        await ctx.respond(f"\u2705 The item list is loaded with **{len(bot.item_mapping)}** items.", ephemeral=True)
+        await ctx.respond(f"\n\n The item list is loaded with **{len(bot.item_mapping)}** items.", ephemeral=True)
     else:
-        await ctx.respond("\u274c The item list is not loaded yet. Please check the logs for errors.", ephemeral=True)
+        await ctx.respond("\n\n The item list is not loaded yet. Please check the logs for errors.", ephemeral=True)
 
 ge = bot.create_group("ge", "Commands for the Grand Exchange.")
 async def item_autocomplete(ctx: discord.AutocompleteContext):
@@ -1171,7 +1205,7 @@ async def calculate_value(
         else:
             unmatched_items.append(f"{quantity_str} {item_name_raw.title()} (Item not found in database)")
 
-    embed = discord.Embed(title="\ud83d\udcb8 Grand Exchange Value Calculator", color=discord.Color.dark_teal())
+    embed = discord.Embed(title="\n\n Grand Exchange Value Calculator", color=discord.Color.dark_teal())
     
     if parsed_items_output:
         embed.add_field(name="Items Valued", value="\n".join(parsed_items_output), inline=False)
@@ -1231,7 +1265,7 @@ async def view(ctx: discord.ApplicationContext):
     embed = discord.Embed(title=f"Leaderboard: {data['title']}", description=f"Current standings for the **{data['metric'].capitalize()}** competition.", color=discord.Color.purple(), url=f"https://wiseoldman.net/competitions/{data['id']}")
     leaderboard_text = ""
     for i, player in enumerate(data['participations'][:10]):
-        rank_emoji = {1: "\ud83c\udfc6", 2: "\ud83e\udd48", 3: "\ud83e\udd49"}.get(i + 1, f"`{i + 1}.`")
+        rank_emoji = {1: "\n\n", 2: "\n\n", 3: "\n\n"}.get(i + 1, f"`{i + 1}.`")
         leaderboard_text += f"{rank_emoji} **{player['player']['displayName']}**: {player['progress']['gained']:,} XP\n"
     if not leaderboard_text: leaderboard_text = "No participants have gained XP yet."
     embed.add_field(name="Top 10", value=leaderboard_text, inline=False)
@@ -1332,7 +1366,7 @@ async def view_tickets(ctx: discord.ApplicationContext):
             return await ctx.respond("There is no active raffle.")
         raffle_id, prize = raffle_data
         entries = await conn.fetch("SELECT user_id, COUNT(user_id) FROM raffle_entries WHERE raffle_id = $1 GROUP BY user_id ORDER BY COUNT(user_id) DESC", raffle_id)
-    embed = discord.Embed(title=f"\ud83c\udf9f\ufe0f Raffle Tickets for '{prize}'", color=discord.Color.gold())
+    embed = discord.Embed(title=f"\n\n Raffle Tickets for '{prize}'", color=discord.Color.gold())
     if not entries:
         embed.description = "No tickets have been given out yet for this raffle."
     else:
@@ -1401,39 +1435,39 @@ async def view_events(ctx: discord.ApplicationContext):
         giveaway = await conn.fetchrow("SELECT * FROM giveaways WHERE is_active = TRUE AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
         pvm_event = await conn.fetchrow("SELECT * FROM pvm_events WHERE is_active = TRUE AND starts_at > NOW() ORDER BY starts_at ASC LIMIT 1")
 
-    embed = discord.Embed(title="\ud83d\udcc5 Clan Event Status", description="Here's a look at all the events currently running.", color=discord.Color.blurple())
+    embed = discord.Embed(title="\n\n Clan Event Status", description="Here's a look at all the events currently running.", color=discord.Color.blurple())
     
     if comp:
         comp_ends_dt = comp['ends_at']
         comp_info = (f"**Title:** [{comp['title']}](https://wiseoldman.net/competitions/{comp['id']})\n"
                      f"**Ends:** <t:{int(comp_ends_dt.timestamp())}:R>")
-        embed.add_field(name="\u2694\ufe0f Active Competition", value=comp_info, inline=False)
+        embed.add_field(name="\n\n Active Competition", value=comp_info, inline=False)
     else:
-        embed.add_field(name="\u2694\ufe0f Active Competition", value="There is no SOTW competition currently running.", inline=False)
+        embed.add_field(name="\n\n Active Competition", value="There is no SOTW competition currently running.", inline=False)
     
     if raf:
         raf_ends_dt = raf['ends_at']
         raf_info = (f"**Prize:** {raf['prize']}\n"
                     f"**Ends:** <t:{int(raf_ends_dt.timestamp())}:R>\n[View Raffle]({bot.get_channel(RAFFLE_CHANNEL_ID).jump_url if bot.get_channel(RAFFLE_CHANNEL_ID) else '#'}) ")
-        embed.add_field(name="\ud83c\udf9f\ufe0f Active Raffle", value=raf_info, inline=False)
+        embed.add_field(name="\n\n Active Raffle", value=raf_info, inline=False)
     else:
-        embed.add_field(name="\ud83c\udf9f\ufe0f Active Raffle", value="There is no raffle currently running.", inline=False)
+        embed.add_field(name="\n\n Active Raffle", value="There is no raffle currently running.", inline=False)
 
     if giveaway:
         gw_ends_dt = giveaway['ends_at']
         gw_info = (f"**Prize:** {giveaway['prize']}\n"
                    f"**Ends:** <t:{int(gw_ends_dt.timestamp())}:R>\n[Enter Here]({bot.get_channel(giveaway['channel_id']).get_partial_message(giveaway['message_id']).jump_url})")
-        embed.add_field(name="\ud83c\udf81 Active Giveaway", value=gw_info, inline=False)
+        embed.add_field(name="\n\n Active Giveaway", value=gw_info, inline=False)
     else:
-        embed.add_field(name="\ud83c\udf81 Active Giveaway", value="There are no active giveaways.", inline=False)
+        embed.add_field(name="\n\n Active Giveaway", value="There are no active giveaways.", inline=False)
     
     if pvm_event:
         pvm_starts_dt = pvm_event['starts_at']
         pvm_info = (f"**Event:** {pvm_event['title']}\n"
                     f"**Starts:** <t:{int(pvm_starts_dt.timestamp())}:F> (<t:{int(pvm_starts_dt.timestamp())}:R>)\n[View Event]({bot.get_channel(pvm_event['channel_id']).get_partial_message(pvm_event['message_id']).jump_url if pvm_event['channel_id'] and pvm_event['message_id'] else '#'}) ")
-        embed.add_field(name="\ud83d\udde1\ufe0f Upcoming PVM Event", value=pvm_info, inline=False)
+        embed.add_field(name="\n\n Upcoming PVM Event", value=pvm_info, inline=False)
     else:
-        embed.add_field(name="\ud83d\udde1\ufe0f Upcoming PVM Event", value="No PVM events scheduled.", inline=False)
+        embed.add_field(name="\n\n Upcoming PVM Event", value="No PVM events scheduled.", inline=False)
 
     embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
     await ctx.respond(embed=embed)
@@ -1530,7 +1564,7 @@ async def view_submissions(ctx: discord.ApplicationContext):
     await ctx.respond("Here are the pending submissions for the active bingo event:", ephemeral=True)
     for sub in pending:
         user = await bot.fetch_user(sub['user_id'])
-        embed = discord.Embed(title="\ud83d\udcdd Bingo Submission", description=f"**Task:** {sub['task_name']}", color=discord.Color.yellow())
+        embed = discord.Embed(title="\n\n Bingo Submission", description=f"**Task:** {sub['task_name']}", color=discord.Color.yellow())
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
         embed.add_field(name="Proof", value=f"[Click to view]({sub['proof_url']})", inline=False)
         embed.set_footer(text=f"Submission ID: {sub['id']}")
@@ -1563,7 +1597,7 @@ async def view_rewards(ctx: discord.ApplicationContext):
     async with bot.db_pool.acquire() as conn:
         try:
             rewards = await conn.fetch("SELECT * FROM rewards WHERE is_active = TRUE ORDER BY point_cost ASC")
-            embed = discord.Embed(title="\ud83d\udecd\ufe0f Clan Point Store Rewards \ud83d\udecd\ufe0f", color=discord.Color.gold())
+            embed = discord.Embed(title="\n\n\n Clan Point Store Rewards \n\n\n", color=discord.Color.gold())
             if not rewards:
                 embed.description = "There are currently no active rewards in the point store."
             else:
@@ -1741,7 +1775,7 @@ async def start_giveaway(ctx: discord.ApplicationContext, prize: discord.Option(
     embed = discord.Embed.from_dict(ai_embed_data)
     embed.add_field(name="Ends In", value=f"<t:{int(ends_at.timestamp())}:R>", inline=True)
     embed.add_field(name="Winners", value=f"**{winners}**", inline=True)
-    if reward_role: embed.add_field(name="\ud83c\udfc6 Bonus Reward", value=f"Winner(s) will receive the {reward_role.mention} role!", inline=False)
+    if reward_role: embed.add_field(name="\n\n Bonus Reward", value=f"Winner(s) will receive the {reward_role.mention} role!", inline=False)
     embed.set_footer(text=f"Giveaway started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
     try:
         giveaway_message = await giveaway_channel.send(embed=embed)
@@ -1768,7 +1802,7 @@ async def view_entries(ctx: discord.ApplicationContext):
             return
         entries = await conn.fetch("SELECT user_id FROM giveaway_entries WHERE message_id = $1", active_giveaway['message_id'])
     embed = discord.Embed(
-        title=f"\ud83c\udf9f\ufe0f Entries for '{active_giveaway['prize']}'",
+        title=f"\n\n Entries for '{active_giveaway['prize']}'",
         description=f"Total Entries: **{len(entries)}**",
         color=discord.Color.blue()
     )
@@ -1803,14 +1837,14 @@ async def leaderboard(ctx: discord.ApplicationContext):
     await ctx.defer()
     async with bot.db_pool.acquire() as conn:
         leaders = await conn.fetch("SELECT discord_id, points FROM clan_points ORDER BY points DESC LIMIT 10")
-    embed = discord.Embed(title="\ud83c\udfc6 Clan Points Leaderboard \ud83c\udfc6", color=discord.Color.gold())
+    embed = discord.Embed(title="\n\n\n Clan Points Leaderboard \n\n\n", color=discord.Color.gold())
     if not leaders:
         embed.description = "No one has earned any points yet."
     else:
         leaderboard_text = ""
         for i, entry in enumerate(leaders):
             user_id, points = entry['discord_id'], entry['points']
-            rank_emoji = {1: "\ud83e\udd47", 2: "\ud83e\udd48", 3: "\ud83e\udd49"}.get(i + 1, f"`{i + 1}.`")
+            rank_emoji = {1: "\n\n", 2: "\n\n", 3: "\n\n"}.get(i + 1, f"`{i + 1}.`")
             try:
                 member = await ctx.guild.fetch_member(user_id)
                 leaderboard_text += f"{rank_emoji} **{member.display_name}**: {points:,} points\n"
@@ -1880,7 +1914,7 @@ async def view_osrs_profile(ctx: discord.ApplicationContext, member: discord.Opt
                                 }
                     
                     embed = discord.Embed(
-                        title=f"\ud83d\udc51 OSRS Profile: {osrs_name}",
+                        title=f"\n\n OSRS Profile: {osrs_name}",
                         url=f"https://secure.runescape.com/m=hiscore_oldschool/hiscorepersonal?user1={up.quote(osrs_name)}", 
                         color=discord.Color.blue()
                     )
@@ -1923,7 +1957,7 @@ Top 3 Skills: {', '.join(top_skills_list) if top_skills_list else 'None yet'}
                     for skill in combat_skills:
                         s_data = skills_data.get(skill)
                         if s_data:
-                            combat_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
+                            combat_value += f"**{skill.capitalize()}**": {s_data['level']}\n"
                     if combat_value: 
                         embed.add_field(name="Combat Skills", value=combat_value, inline=True)
                     
@@ -1932,7 +1966,7 @@ Top 3 Skills: {', '.join(top_skills_list) if top_skills_list else 'None yet'}
                     for skill in skilling_skills:
                         s_data = skills_data.get(skill)
                         if s_data:
-                            skilling_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
+                            skilling_value += f"**{skill.capitalize()}**": {s_data['level']}\n"
                     if skilling_value: 
                         embed.add_field(name="Other Skills", value=skilling_value, inline=True)
                     
@@ -1995,7 +2029,7 @@ async def view_osrs_kc(ctx: discord.ApplicationContext, member: discord.Option(d
                                 }
 
                     embed = discord.Embed(
-                        title=f"\ud83c\udfc6 OSRS Kill Counts: {osrs_name}",
+                        title=f"\n\n OSRS Kill Counts: {osrs_name}",
                         url=f"https://secure.runescape.com/m=hiscore_oldschool/hiscorepersonal?user1={up.quote(osrs_name)}", 
                         color=discord.Color.dark_red()
                     )
@@ -2096,7 +2130,7 @@ async def view_pvm_participants(ctx: discord.ApplicationContext, event_id: disco
         signups = await conn.fetch("SELECT user_id FROM pvm_event_signups WHERE event_id = $1", event_id)
 
     embed = discord.Embed(
-        title=f"\ud83d\udc65 Participants for '{event_data['title']}'",
+        title=f"\n\n Participants for '{event_data['title']}'",
         description=f"Starts: <t:{int(event_data['starts_at'].timestamp())}:F>\nTotal Signed Up: **{len(signups)}**",
         color=discord.Color.green()
     )
@@ -2191,7 +2225,7 @@ async def my_pb(ctx: discord.ApplicationContext, boss_name: discord.Option(str, 
 
     pb_time_seconds = pb_data['pb_time_ms'] / 1000
     embed = discord.Embed(
-        title=f"\ud83c\udfc6 {ctx.author.display_name}'s PB for {boss_name.title()}",
+        title=f"\n\n {ctx.author.display_name}'s PB for {boss_name.title()}",
         color=discord.Color.gold()
     )
     embed.add_field(name="Time", value=f"**{pb_time_seconds:.2f} seconds**", inline=False)
@@ -2206,7 +2240,7 @@ async def clan_pb(ctx: discord.ApplicationContext, boss_name: discord.Option(str
         leaderboard_data = await conn.fetch("SELECT discord_id, pb_time_ms FROM boss_pbs WHERE boss_name ILIKE $1 ORDER BY pb_time_ms ASC LIMIT 10", boss_name)
 
     embed = discord.Embed(
-        title=f"\ud83c\udfc6 Clan PB Leaderboard: {boss_name.title()}",
+        title=f"\n\n Clan PB Leaderboard: {boss_name.title()}",
         color=discord.Color.blue()
     )
 
@@ -2215,7 +2249,7 @@ async def clan_pb(ctx: discord.ApplicationContext, boss_name: discord.Option(str
     else:
         leaderboard_text = ""
         for i, entry in enumerate(leaderboard_data):
-            rank_emoji = {1: "\ud83e\udd47", 2: "\ud83e\udd48", 3: "\ud83e\udd49"}.get(i + 1, f"`{i + 1}.`")
+            rank_emoji = {1: "\n\n", 2: "\n\n", 3: "\n\n"}.get(i + 1, f"`{i + 1}.`")
             try:
                 member = await ctx.guild.fetch_member(entry['discord_id'])
                 if member:
@@ -2231,7 +2265,7 @@ async def clan_pb(ctx: discord.ApplicationContext, boss_name: discord.Option(str
 async def help(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
     embed = discord.Embed(
-        title="\ud83d\udcdc GrazyBot Command List \ud83d\udcdc",
+        title="\n\n GrazyBot Command List \n\n",
         description="Here are all the commands you can use to manage clan events.",
         color=discord.Color.blurple()
     )
@@ -2278,8 +2312,8 @@ async def help(ctx: discord.ApplicationContext):
     `/pvm schedule` - Schedule a new PVM event.
     `/pvm cancel` - Cancel an upcoming PVM event.
     """
-    embed.add_field(name="\u2705 Member Commands", value=textwrap.dedent(member_commands), inline=False)
-    embed.add_field(name="\ud83d\udc51 Admin Commands", value=textwrap.dedent(admin_commands), inline=False)
+    embed.add_field(name="\n\n Member Commands", value=textwrap.dedent(member_commands), inline=False)
+    embed.add_field(name="\n\n Admin Commands", value=textwrap.dedent(admin_commands), inline=False)
     embed.set_footer(text="Let the games begin!")
     await ctx.respond(embed=embed, ephemeral=True)
 
