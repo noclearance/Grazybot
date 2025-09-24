@@ -1951,7 +1951,6 @@ Top 3 Skills: {', '.join(top_skills_list) if top_skills_list else 'None yet'}
                     overall = skills_data.get('overall', {})
                     if overall:
                         embed.add_field(name="Overall", value=f"Rank: {overall['rank']:,}\nLevel: {overall['level']}\nXP: {overall['xp']:,}", inline=False)
-                   skilling_value 1970
                     combat_skills = ["attack", "strength", "defence", "ranged", "prayer", "magic", "hitpoints"]							
 combat_value = ""
 for skill in combat_skills:
