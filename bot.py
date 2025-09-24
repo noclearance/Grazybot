@@ -1951,25 +1951,39 @@ Top 3 Skills: {', '.join(top_skills_list) if top_skills_list else 'None yet'}
                     overall = skills_data.get('overall', {})
                     if overall:
                         embed.add_field(name="Overall", value=f"Rank: {overall['rank']:,}\nLevel: {overall['level']}\nXP: {overall['xp']:,}", inline=False)
-                    
-                    combat_skills = ["attack", "strength", "defence", "ranged", "prayer", "magic", "hitpoints"]
-                    combat_value = ""
-                    for skill in combat_skills:
-                        s_data = skills_data.get(skill)
-                        if s_data:
-                            combat_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
+                   skilling_value 1970
+                    combat_skills = ["attack", "strength", "defence", "ranged", "prayer", "magic", "hitpoints"]							
+combat_value = ""
+for skill in combat_skills:
+    s_data = skills_data.get(skill)
+    if s_data:
+        combat_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
 
-                    if combat_value: 
-                        embed.add_field(name="Combat Skills", value=combat_value, inline=True)
+if combat_value:
+    embed.add_field(name="Combat Skills", value=combat_value, inline=True)
                     
                     skilling_skills = ["cooking", "woodcutting", "fletching", "fishing", "firemaking", "crafting", "smithing", "mining", "herblore", "agility", "thieving", "slayer", "farming", "runecraft", "hunter", "construction"]
-                    skilling_value = ""
-                    for skill in skilling_skills:
-                        s_data = skills_data.get(skill)
-                        if s_data:
-                            skilling_value += f"**{skill.capitalize()}**": {s_data['level']}\n"
-                    if skilling_value: 
-                        embed.add_field(name="Other Skills", value=skilling_value, inline=True)
+# Build combat_value
+combat_value = ""
+for skill in combat_skills:
+    s_data = skills_data.get(skill)
+    if s_data:
+        combat_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
+
+if combat_value:
+    embed.add_field(name="Combat Skills", value=combat_value, inline=True)
+
+
+# Build skilling_value
+skilling_value = ""
+for skill in skilling_skills:
+    s_data = skills_data.get(skill)
+    if s_data:
+        skilling_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
+
+if skilling_value: 
+    embed.add_field(name="Other Skills", value=skilling_value, inline=True)
+
                     
                     embed.set_footer(text=f"Data from OSRS Hiscores | Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
                     await ctx.respond(embed=embed)
