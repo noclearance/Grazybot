@@ -1,5 +1,3 @@
-# requirements.txt
-
 # Core
 requests
 urllib3
@@ -16,8 +14,9 @@ propcache
 aiohappyeyeballs
 
 # Database
-psycopg2-binary9
+psycopg2-binary
 supabase
 
 # Extras / useful tooling
 python-dotenv
+
