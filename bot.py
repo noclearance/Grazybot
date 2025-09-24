@@ -1,5 +1,6 @@
 # bot.py
 import discord
+from discord import Embed
 from discord.ext import tasks
 import os
 from dotenv import load_dotenv
@@ -16,18 +17,8 @@ from io import BytesIO
 from discord.commands import SlashCommandGroup, Option
 import re
 import urllib.parse as up
-from supabase import create_client, Client
-import os
 
 import asyncpg # New import for asynchronous PostgreSQL
-
-# Get your Supabase credentials from environment variables
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-# Create the Supabase client instance
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
 
 # --- Configuration & Setup ---
 load_dotenv()
@@ -38,6 +29,9 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 DEBUG_GUILD_ID = int(os.getenv('DEBUG_GUILD_ID'))
 DATABASE_URL = os.getenv('DATABASE_URL')
 TASKS_FILE = "tasks.json"
+SOTW_ROLE_ID = int(os.getenv('SOTW_ROLE_ID'))
+MAX_FIELD_LENGTH = 1024
+
 
 # Channel IDs
 SOTW_CHANNEL_ID = int(os.getenv('SOTW_CHANNEL_ID'))
@@ -222,12 +216,12 @@ async def setup_database_pool():
 
 # --- All View Classes ---
 class SotwPollView(discord.ui.View):
-    def __init__(self, author):
+    def __init__(self, author: discord.Member):
         super().__init__(timeout=86400)
         self.author = author
         self.votes = {}
 
-    async def create_embed(self):
+    async def create_embed(self) -> discord.Embed:
         ai_embed_data = await generate_announcement_json("sotw_poll")
         vote_description = "\n\n**Current Votes:**\n"
         for skill, voters in self.votes.items(): vote_description += f"**{skill.capitalize()}**: {len(voters)} vote(s)\n"
@@ -236,7 +230,7 @@ class SotwPollView(discord.ui.View):
         embed.set_footer(text=f"Poll started by {self.author.display_name}", icon_url=self.author.display_avatar.url)
         return embed
 
-    def add_buttons(self, skills):
+    def add_buttons(self, skills: list):
         for skill in skills: self.votes[skill] = []; self.add_item(SotwButton(label=skill.capitalize(), custom_id=skill))
         self.add_item(FinishButton(label="Finish Poll & Start SOTW", custom_id="finish_poll"))
 
@@ -272,7 +266,7 @@ class SotwButton(discord.ui.Button):
         await interaction.followup.send(response_message, ephemeral=True)
 
 class FinishButton(discord.ui.Button):
-    def __init__(self, label, custom_id): super().__init__(label=label, style=discord.ButtonStyle.danger, custom_id=custom_id)
+    def __init__(self, label: str, custom_id: str): super().__init__(label=label, style=discord.ButtonStyle.danger, custom_id=custom_id)
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.view.author.id: return await interaction.response.send_message("Only the poll starter can finish it.", ephemeral=True)
         view = self.view
@@ -298,14 +292,12 @@ class SubmissionView(discord.ui.View):
     async def approve_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         submission_id = int(interaction.message.embeds[0].footer.text.split(": ")[1])
         async with bot.db_pool.acquire() as conn:
-            # FIX: Select event_id from submissions
             submission_data = await conn.fetchrow("SELECT user_id, task_name, event_id FROM bingo_submissions WHERE id = $1", submission_id)
             if not submission_data:
                 return await interaction.response.send_message("This submission was already handled.", ephemeral=True)
-            user_id, task_name, event_id = submission_data
+            user_id, task_name, event_id = submission_data['user_id'], submission_data['task_name'], submission_data['event_id']
             
             await conn.execute("UPDATE bingo_submissions SET status = 'approved' WHERE id = $1", submission_id)
-            # FIX: Insert into bingo_completed_tiles with event_id
             await conn.execute("INSERT INTO bingo_completed_tiles (event_id, task_name) VALUES ($1, $2) ON CONFLICT (event_id, task_name) DO NOTHING",
                                event_id, task_name)
         await interaction.message.delete()
@@ -324,7 +316,7 @@ class SubmissionView(discord.ui.View):
         await interaction.response.send_message(f"Submission #{submission_id} denied.", ephemeral=True)
 
 class GiveawayView(discord.ui.View):
-    def __init__(self, message_id):
+    def __init__(self, message_id: int):
         super().__init__(timeout=None)
         self.message_id = message_id
 
@@ -378,25 +370,137 @@ class PvmEventView(discord.ui.View):
                 await interaction.response.send_message("An error occurred while withdrawing from the event.", ephemeral=True)
 
 # --- Helper Functions ---
+# Fetch clan members dynamically
+async def fetch_clan_members(clan_id: int) -> list[str]:
+    url = f"https://api.wiseoldman.net/v2/clans/{clan_id}/members"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as resp:
+                resp.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+                data = await resp.json()
+                return [member['username'] for member in data]
+        except aiohttp.ClientError as e:
+            print(f"Error fetching clan members from WOM: {e}")
+            return []
+
+# Async fetch individual stats
+async def fetch_osrs_stats(session: aiohttp.ClientSession, username: str) -> tuple[str, dict | None]:
+    url = f"https://api.wiseoldman.net/v2/players/{username}/records"
+    try:
+        async with session.get(url) as resp:
+            resp.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+            data = await resp.json()
+            return username, data.get('skills', {})
+    except aiohttp.ClientError as e:
+        print(f"Error fetching OSRS stats for {username} from WOM: {e}")
+        return username, None
+    except Exception as e:
+        print(f"Unexpected error fetching OSRS stats for {username}: {e}")
+        return username, None
+
+# Fetch all stats concurrently
+async def fetch_all_stats_async(members: list[str]) -> dict[str, dict]:
+    results = {}
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_osrs_stats(session, member) for member in members]
+        responses = await asyncio.gather(*tasks)
+        for username, skills_data in responses:
+            if skills_data:
+                results[username] = skills_data
+    return results
+
+# Format skill lists for embeds
+def format_skill_list(skills: list[str], skills_data: dict) -> list[str]:
+    lines = []
+    current_block = ""
+    for skill in skills:
+        s_data = skills_data.get(skill)
+        if not s_data:
+            continue
+        line = f"**{skill.capitalize()}**: {s_data['level']} ({s_data['xp']:,} XP)\n"
+        if len(current_block) + len(line) > MAX_FIELD_LENGTH:
+            lines.append(current_block)
+            current_block = line
+        else:
+            current_block += line
+    if current_block:
+        lines.append(current_block)
+    return lines
+
+# Individual player embed
+def build_individual_embed(username: str, skills_data: dict) -> discord.Embed:
+    embed = Embed(title=f"{username} - OSRS Stats", color=0x00ff00)
+
+    overall = skills_data.get('overall')
+    if overall:
+        embed.add_field(name="Overall", value=f"Rank: {overall['rank']:,}\nLevel: {overall['level']}\nXP: {overall['xp']:,}", inline=False)
+
+    combat_skills = ["attack", "strength", "defence", "ranged", "prayer", "magic", "hitpoints"]
+    for i, block in enumerate(format_skill_list(combat_skills, skills_data)):
+        embed.add_field(name=f"Combat Skills{' part ' + str(i+1) if i else ''}", value=block, inline=True)
+
+    skilling_skills = ["cooking", "woodcutting", "fletching", "fishing", "firemaking", "crafting",
+                       "smithing", "mining", "herblore", "agility", "thieving", "slayer", "farming",
+                       "runecraft", "hunter", "construction"]
+    for i, block in enumerate(format_skill_list(skilling_skills, skills_data)):
+        embed.add_field(name=f"Other Skills{' part ' + str(i+1) if i else ''}", value=block, inline=true)
+
+    return embed
+
+# Clan leaderboard embed
+def build_leaderboard_embed(stats_dict: dict, metric: str = "overall") -> discord.Embed:
+    embed = Embed(title="Clan Leaderboard", color=0x00ff00)
+
+    leaderboard = sorted(stats_dict.items(),
+                         key=lambda x: x[1][metric]['xp'] if metric in x[1] else 0,
+                         reverse=True)
+
+    leaderboard_text = ""
+    for i, (username, skills) in enumerate(leaderboard, start=1):
+        overall = skills.get('overall')
+        if overall:
+            leaderboard_text += f"**{i}. {username}** - Level {overall['level']} ({overall['xp']:,} XP)\n"
+
+    blocks, current_block = [], ""
+    for line in leaderboard_text.splitlines():
+        if len(current_block) + len(line) + 1 > MAX_FIELD_LENGTH:
+            blocks.append(current_block)
+            current_block = line + "\n"
+        else:
+            current_block += line + "\n"
+    if current_block:
+        blocks.append(current_block)
+
+    for idx, block in enumerate(blocks):
+        embed.add_field(name=f"Leaderboard{' part '+str(idx+1) if len(blocks) > 1 else ''}", value=block, inline=False)
+
+    return embed
+
 async def load_item_mapping():
-    """Fetches the item name-to-ID mapping from the OSRS Cloud API on startup."""
+    """Fetches the item name-to-ID mapping from the OSRS Cloud API on startup, with retry logic."""
     url = "https://prices.osrs.cloud/api/v1/latest/mapping"
     headers = {'User-Agent': 'GrazyBot/1.0'}
-    # Adding a 30-second timeout to prevent the bot from hanging forever
     timeout = aiohttp.ClientTimeout(total=30)
-    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-        try:
-            async with session.get(url) as response:
-                if response.status == 200:
+    retries = 3
+    for attempt in range(retries):
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            try:
+                async with session.get(url) as response:
+                    response.raise_for_status()
                     data = await response.json()
                     bot.item_mapping = {item['name'].lower(): item for item in data}
-                    print(f"Successfully loaded {len(bot.item_mapping)} items in the background.")
-                else:
-                    print(f"Error loading item mapping: API returned status {response.status}")
-        except asyncio.TimeoutError:
-            print("Error loading item mapping: The request timed out.")
-        except Exception as e:
-            print(f"An exception occurred while loading item mapping: {e}")
+                    print(f"Successfully loaded {len(bot.item_mapping)} items (attempt {attempt+1}/{retries}).")
+                    return
+            except asyncio.TimeoutError:
+                print(f"Error loading item mapping: The request timed out (attempt {attempt+1}/{retries}).")
+            except aiohttp.ClientError as e:
+                print(f"Error loading item mapping: API returned status {response.status} (attempt {attempt+1}/{retries}). Error: {e}")
+            except Exception as e:
+                print(f"An unexpected exception occurred while loading item mapping (attempt {attempt+1}/{retries}): {e}")
+            
+            if attempt < retries - 1:
+                await asyncio.sleep(5 * (attempt + 1)) # Exponential backoff
+    print(f"Failed to load item mapping after {retries} attempts.")
 
 def format_price_timestamp(ts: int) -> str:
     """Formats a UNIX timestamp into a human-readable relative time string."""
@@ -415,7 +519,7 @@ def format_price_timestamp(ts: int) -> str:
         days = delta.days
         return f"{days} day{'s' if days > 1 else ''} ago"
 
-def get_wom_metric_url(metric):
+def get_wom_metric_url(metric: str) -> str:
     """Generates a URL for a specific OSRS Wiki skill/activity icon."""
     base_url = "https://oldschool.runescape.wiki/images/"
     icon_map = {"attack": "Attack_icon.png", "strength": "Strength_icon.png", "defence": "Defence_icon.png", "hitpoints": "Hitpoints_icon.png", "ranged": "Ranged_icon.png", "magic": "Magic_icon.png", "prayer": "Prayer_icon.png", "vorkath": "Vorkath.png", "zulrah": "Zulrah.png", "chambers_of_xeric": "Olmlet.png", "tombs_of_amascut": "Tumeken's_guardian.png"}
@@ -440,20 +544,24 @@ async def award_points(member: discord.Member, amount: int, reason: str):
         except Exception as e:
             print(f"Failed to send points DM: {e}")
 
-async def create_competition(clan_id: str, skill: str, duration_days: int):
+async def create_competition(clan_id: str, skill: str, duration_days: int) -> tuple[dict | None, str | None]:
     url = "https://api.wiseoldman.net/v2/competitions"
     start_date = datetime.now(timezone.utc) + timedelta(minutes=1); end_date = start_date + timedelta(days=duration_days)
     payload = {"title": f"{skill.capitalize()} SOTW ({duration_days} days)","metric": skill,"startsAt": start_date.isoformat(),"endsAt": end_date.isoformat(),"groupId": int(clan_id),"groupVerificationCode": WOM_VERIFICATION_CODE}
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload) as response:
-            if response.status == 201:
+        try:
+            async with session.post(url, json=payload) as response:
+                response.raise_for_status()
                 comp_data = await response.json()
                 async with bot.db_pool.acquire() as conn:
-                    await conn.execute("INSERT INTO active_competitions (id, title, starts_at, ends_at) VALUES ($1, $2, $3, $4)", comp_data['competition']['id'], comp_data['competition']['title'], comp_data['competition']['startsAt'], comp_data['competition']['endsAt'])
+                    await conn.execute("INSERT INTO active_competitions (id, title, starts_at, ends_at) VALUES ($1, $2, $3, $4)", comp_data['competition']['id'], comp_data['competition']['title'], datetime.fromisoformat(comp_data['competition']['startsAt']), datetime.fromisoformat(comp_data['competition']['endsAt']))
                 return comp_data, None
-            else: return None, f"API Error: {(await response.json()).get('message', 'Failed to create competition.')}"
+        except aiohttp.ClientError as e:
+            return None, f"API Error creating competition: {e}. {(await response.json()).get('message', '')}"
+        except Exception as e:
+            return None, f"Unexpected error creating competition: {e}"
 
-async def create_competition_embed(data, author, poll_winner=False):
+async def create_competition_embed(data: dict, author: discord.Member, poll_winner: bool = False) -> discord.Embed:
     comp = data['competition']; comp_id = comp['id']
     details = {"skill": comp['metric'].capitalize()}
     ai_embed_data = await generate_announcement_json("sotw_start", details)
@@ -464,7 +572,7 @@ async def create_competition_embed(data, author, poll_winner=False):
     embed.set_footer(text=f"Competition started by {author.display_name}", icon_url=author.display_avatar.url)
     return embed
 
-async def generate_recap_text(gains_data: list):
+async def generate_recap_text(gains_data: list) -> str:
     data_summary = ""
     for i, player in enumerate(gains_data[:10]):
         rank = i + 1; username = player['player']['displayName']; gained = player.get('gained', 0)
@@ -485,7 +593,7 @@ EMBED_FALLBACKS = {
     "giveaway_start": {"title": "\n\n A Gift to the Worthy! \n\n", "description": "To honor your dedication, a new giveaway has commenced! Press the button below for a chance to claim the prize of **{prize}**!", "color": 3066993},
     "bingo_start": {"title": "\n\n The Taskmaster's Gauntlet is Thrown! \n\n", "description": "Behold, warriors! The Taskmaster has unveiled a new challenge, a complex tapestry of trials designed to test the full breadth of your abilities! The clan bingo board awaits, filled with unique tasks that demand versatility and teamwork. Step forth, examine the challenges, and prove your mastery!", "color": 11027200},
     "points_award": {"title": "\n\n Your Renown Grows!", "description": "Hark! For your commendable dedication in *{reason}*, your standing within the clan has increased! You have been awarded a significant **{amount} Clan Points**! These points are a testament to your growing renown and can be exchanged for powerful boons and legendary artifacts within the clan's esteemed point store. Well done, warrior!", "color": 5763719},
-    "pvm_event_start": {"title": "\n\n A Call to Arms: {title}! \n\n", "description": "Hear ye, hear ye! The time for battle is nigh! A new PVM event, **{title}**, has been declared! On <t:{start_time_unix}:F>, we shall embark on {description_text}. Gather your gear, sharpen your blades, and sign up below to join the ranks of heroes!", "color": 16711680},
+    "pvm_event_start": {"title": "\n\n A Call to Arms: {title}! \n\n", "description": "Hear ye, hear ye! The time for battle is nigh! A new PVM event, **{title}**, has been declared! On <t:{start_time_unix}:F>, we shall embark on {description}. Gather your gear, sharpen your blades, and sign up below to join the ranks of heroes!", "color": 16711680},
     "default": {"title": "\n\n A New Calling!", "description": "A new event has begun! Answer the call.", "color": 3447003}
 }
 
@@ -508,19 +616,19 @@ Make every announcement sound like a legendary event is unfolding, providing ric
         "pvm_event_start": f"Generate an epic and engaging embed description for a new PVM event titled: **{details.get('title', 'a grand PVM event')}**. Describe it as a critical expedition or a heroic stand against formidable foes. Emphasize the need for valor, strategy, and teamwork. Inform the warriors that it commences on <t:{details.get('start_time_unix')}:F> and urge them to sign up to secure their place in legend and claim their share of the glory.",
     }
 
-    specific_prompt = specific_prompts.get(event_type, specific_prompts.get("default", "Generate a general clan announcement about a new event.")) # Added a default catch if specific_prompts has a 'default'
+    specific_prompt = specific_prompts.get(event_type, "Generate a general clan announcement about a new event.") # Added a default catch if specific_prompts has a 'default'
     fallback = EMBED_FALLBACKS.get(event_type, EMBED_FALLBACKS["default"])
     
     # Format the fallback description if it has placeholders
     if 'description' in fallback:
         try:
             fallback['description'] = fallback['description'].format(**details)
-        except KeyError:
-            pass # Fallback to original description if keys are missing
+        except KeyError: # Fallback to original description if keys are missing
+            pass 
     if 'title' in fallback:
         try:
             fallback['title'] = fallback['title'].format(**details)
-        except KeyError:
+        except KeyError: # Fallback to original description if keys are missing
             pass
 
     full_prompt = f"{persona_prompt}\n\nRequest: {specific_prompt}\n\nJSON Output:"
@@ -532,23 +640,21 @@ Make every announcement sound like a legendary event is unfolding, providing ric
         print(f"An error occurred during JSON generation for {event_type}: {e}")
         return fallback
 
-# FIX: draw_raffle_winner to select an eligible raffle (oldest ended but not drawn)
-async def draw_raffle_winner(raffle_channel: discord.TextChannel):
+async def draw_raffle_winner(raffle_channel: discord.TextChannel) -> str:
     async with bot.db_pool.acquire() as conn:
-        # Find the oldest raffle that has ended and not yet drawn a winner
         raffle_data = await conn.fetchrow("SELECT * FROM raffles WHERE ends_at < NOW() AND winner_id IS NULL ORDER BY ends_at ASC LIMIT 1")
         if not raffle_data:
             return "No ended raffles to draw."
         
         raffle_id = raffle_data['id']
         prize = raffle_data['prize']
-        message_id = raffle_data['message_id']
+        # message_id = raffle_data['message_id'] # Not directly used for drawing
         
         entries = await conn.fetch("SELECT user_id FROM raffle_entries WHERE raffle_id = $1", raffle_id)
         
         if not entries:
             await raffle_channel.send(f"The raffle for **{prize}** (ID: {raffle_id}) has ended, but alas, no one entered the contest of fate.")
-            await conn.execute("UPDATE raffles SET winner_id = 0 WHERE id = $1", raffle_id)
+            await conn.execute("UPDATE raffles SET winner_id = 0 WHERE id = $1", raffle_id) # Mark as drawn with no winner
         else:
             winner_id = random.choice(entries)['user_id']
             winner_user = await bot.fetch_user(winner_id)
@@ -573,7 +679,7 @@ async def draw_raffle_winner(raffle_channel: discord.TextChannel):
         
         return f"Winner drawn for the '{prize}' raffle (ID: {raffle_id})."
 
-async def end_giveaway(giveaway_data):
+async def end_giveaway(giveaway_data: dict):
     message_id = giveaway_data['message_id']
     channel_id = giveaway_data['channel_id']
     prize = giveaway_data['prize']
@@ -626,7 +732,7 @@ async def end_giveaway(giveaway_data):
         ended_embed.add_field(name=f"{win_str}", value=', '.join(winner_mentions), inline=False)
         await message.edit(embed=ended_embed, view=None)
 
-def parse_duration(duration_str: str) -> timedelta:
+def parse_duration(duration_str: str) -> timedelta | None:
     match = re.match(r"(\d+)([mhd])", duration_str.lower())
     if not match:
         return None
@@ -640,22 +746,17 @@ def parse_duration(duration_str: str) -> timedelta:
         return timedelta(days=value)
     return None
 
-# FIX: generate_bingo_image for better font, sizing, and wrapping
-def generate_bingo_image(tasks: list, completed_tasks: list = []):
+def _generate_bingo_image_sync(tasks: list, completed_tasks: list = []) -> tuple[str | None, str | None]:
+    """Synchronous image generation function, to be run in a separate thread."""
     try:
         width, height = 1000, 1000
         background_color = (40, 26, 13) # Dark brown/gold-ish
         img = Image.new('RGB', (width, height), background_color)
         draw = ImageDraw.Draw(img)
 
-        # Define a path for your fonts directory and a default font file
-        FONT_DIR = "fonts" # Create a 'fonts' directory in your bot's root
-        DEFAULT_FONT_FILENAME = "Roboto-Regular.ttf" # Example: you'd place this font file here
+        FONT_DIR = "fonts" 
+        DEFAULT_FONT_FILENAME = "Roboto-Regular.ttf" 
         DEFAULT_FONT_PATH = os.path.join(FONT_DIR, DEFAULT_FONT_FILENAME)
-        
-        # Ensure the font directory exists (helpful for local development, can be removed in deployment if directory is managed)
-        # if not os.path.exists(FONT_DIR):
-        #    os.makedirs(FONT_DIR)
 
         try:
             if os.path.exists(DEFAULT_FONT_PATH):
@@ -705,21 +806,27 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
             
             task_name = task['name']
             
-            # Dynamically calculate max_chars_per_line based on font metrics for better wrapping
-            # A crude estimate: average character width (adjust if a more precise method is needed)
-            avg_char_width = sum(task_font.getlength(c) for c in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') / 62
-            max_chars_per_line = int((cell_size - 10) / avg_char_width) # 10 pixels for padding
+            avg_char_width_approx = 15 # A rough estimate, can be improved with font.getlength('A') etc.
+            max_chars_per_line = int((cell_size - 20) / avg_char_width_approx) # 20 pixels for padding on both sides
+            if max_chars_per_line < 1: max_chars_per_line = 1 # ensure at least 1 char per line
             
-            wrapped_text = textwrap.fill(task_name, width=max_chars_per_line)
+            wrapped_text = textwrap.fill(task_name, width=max_chars_per_line, break_long_words=False, replace_whitespace=False)
             
-            text_bbox = draw.textbbox((0, 0), wrapped_text, font=task_font)
-            text_width = text_bbox[2] - text_bbox[0]
-            text_height = text_bbox[3] - text_bbox[1]
+            # Calculate text size and position correctly after wrapping
+            lines_of_text = wrapped_text.split('\n')
+            total_text_height = sum(task_font.getbbox(line)[3] - task_font.getbbox(line)[1] for line in lines_of_text) # Sum individual line heights
             
-            text_x = cell_x_start + (cell_size - text_width) / 2
-            text_y = cell_y_start + (cell_size - text_height) / 2
-            
-            draw.text((text_x, text_y), wrapped_text, font=task_font, fill=(255, 255, 255))
+            # Calculate starting Y to center the block of text
+            text_y_start = cell_y_start + (cell_size - total_text_height) / 2
+
+            current_y = text_y_start
+            for line in lines_of_text:
+                text_bbox = draw.textbbox((0, 0), line, font=task_font)
+                line_width = text_bbox[2] - text_bbox[0]
+                line_height = text_bbox[3] - text_bbox[1]
+                text_x = cell_x_start + (cell_size - line_width) / 2
+                draw.text((text_x, current_y), line, font=task_font, fill=(255, 255, 255))
+                current_y += line_height
         
         output_path = "bingo_board.png"
         img.save(output_path)
@@ -728,22 +835,19 @@ def generate_bingo_image(tasks: list, completed_tasks: list = []):
         print(f"Error in generate_bingo_image: {e}")
         return None, f"An unexpected error occurred during image generation: {e}"
 
-# FIX: update_bingo_board_post to filter completed tiles by active event
 async def update_bingo_board_post():
     async with bot.db_pool.acquire() as conn:
-        # Get the active event's ID and board data
         event_data = await conn.fetchrow("SELECT id, board_json, message_id FROM bingo_events WHERE is_active = TRUE LIMIT 1")
         if not event_data:
             print("No active bingo event to update.")
             return
         
-        current_event_id, board_tasks_json, message_id = event_data
+        current_event_id, board_tasks_json, message_id = event_data['id'], event_data['board_json'], event_data['message_id']
         board_tasks = json.loads(board_tasks_json)
         
-        # FIX: Filter completed tiles by the current event_id
         completed_tiles = [row[0] for row in await conn.fetch("SELECT task_name FROM bingo_completed_tiles WHERE event_id = $1", current_event_id)]
     
-    image_path, error = generate_bingo_image(board_tasks, completed_tiles)
+    image_path, error = await asyncio.to_thread(_generate_bingo_image_sync, board_tasks, completed_tiles)
     if error:
         print(f"Failed to update bingo board image: {error}")
         return
@@ -751,7 +855,8 @@ async def update_bingo_board_post():
         bingo_channel = bot.get_channel(BINGO_CHANNEL_ID)
         if bingo_channel:
             message = await bingo_channel.fetch_message(message_id)
-            with open(image_path, 'rb') as f:
+            file_content = await asyncio.to_thread(open, image_path, 'rb')
+            with file_content as f:
                 new_file = discord.File(f, filename="bingo_board.png")
                 embed = message.embeds[0]
                 embed.set_image(url="attachment://bingo_board.png")
@@ -782,10 +887,13 @@ async def periodic_event_reminder():
         print("Cannot send periodic reminder: Announcements channel not found.")
         return
     async with bot.db_pool.acquire() as conn:
-        sotw = await conn.fetchrow("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
-        raffle = await conn.fetchrow("SELECT * FROM raffles WHERE ends_at > NOW() AND winner_id IS NULL ORDER BY ends_at DESC LIMIT 1")
-        giveaway = await conn.fetchrow("SELECT * FROM giveaways WHERE ends_at > NOW() AND is_active = TRUE ORDER BY ends_at DESC LIMIT 1")
-        pvm_event = await conn.fetchrow("SELECT * FROM pvm_events WHERE is_active = TRUE AND starts_at > NOW() ORDER BY starts_at ASC LIMIT 1")
+        # Fetch all event data concurrently
+        sotw_task = conn.fetchrow("SELECT title FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
+        raffle_task = conn.fetchrow("SELECT prize FROM raffles WHERE ends_at > NOW() AND winner_id IS NULL ORDER BY ends_at DESC LIMIT 1")
+        giveaway_task = conn.fetchrow("SELECT prize FROM giveaways WHERE ends_at > NOW() AND is_active = TRUE ORDER BY ends_at DESC LIMIT 1")
+        pvm_event_task = conn.fetchrow("SELECT title, starts_at FROM pvm_events WHERE is_active = TRUE AND starts_at > NOW() ORDER BY starts_at ASC LIMIT 1")
+
+        sotw, raffle, giveaway, pvm_event = await asyncio.gather(sotw_task, raffle_task, giveaway_task, pvm_event_task)
 
     event_summary = ""
     if sotw: event_summary += f"- A Skill of the Week competition for **{sotw['title']}** is underway!\n"
@@ -795,18 +903,18 @@ async def periodic_event_reminder():
         event_summary += f"- A PVM event: **{pvm_event['title']}** starts <t:{int(pvm_event['starts_at'].timestamp())}:R>! Use `/pvm signup` to join.\n"
 
     if not event_summary:
-        print("No active events for periodic reminder.")
+        # print("No active events for periodic reminder.") # Don't spam console if no events
         return
     prompt = """
-    You are TaskmasterGPT, the wise and ancient lore-keeper for a clan of warriors.
-    Your task is to write a bulletin summarizing the clan's active events. Your tone is epic, grand, and encouraging.
-    Use the following information to compose your message. Frame it as a call to continue the good fight and remind everyone of the glories to be won.
-    Active Events:
-    {event_summary}
-    Write a compelling summary in a few short paragraphs.
-    """
+You are TaskmasterGPT, the wise and ancient lore-keeper for a clan of warriors.
+Your task is to write a bulletin summarizing the clan's active events. Your tone is epic, grand, and encouraging.
+Use the following information to compose your message. Frame it as a call to continue the good fight and remind everyone of the glories to be won.
+Active Events:
+{event_summary}
+Write a compelling summary in a few short paragraphs.
+"""
     try:
-        response = await ai_model.generate_content_async(prompt)
+        response = await ai_model.generate_content_async(prompt.format(event_summary=event_summary))
         description = response.text
         embed = discord.Embed(title="\n\n The Taskmaster's Bulletin \n\n", description=description, color=discord.Color.dark_gold())
         embed.set_footer(text="Seize the day, warriors!")
@@ -826,50 +934,38 @@ async def event_manager():
             last_recap_timestamp_str = await conn_recap.fetchval("SELECT value FROM bot_settings WHERE key = 'last_recap_sent'")
             last_recap_dt = datetime.fromisoformat(last_recap_timestamp_str) if last_recap_timestamp_str else datetime.min.replace(tzinfo=timezone.utc)
             
-            # Calculate the most recent past or current Sunday 7 PM UTC
             recap_trigger_time = now.replace(hour=19, minute=0, second=0, microsecond=0)
-            
-            # If current time is before Sunday 7 PM, or it's not Sunday at all,
-            # then the `recap_trigger_time` is referring to a *future* Sunday or incorrect day.
-            # Adjust it to the *previous* Sunday 7 PM.
-            if now.weekday() != 6 or now < recap_trigger_time:
-                # Calculate days to subtract to get to the previous Sunday (Sunday is weekday 6)
-                # (now.weekday() - 6 + 7) % 7 will be 0 for Sunday, 1 for Monday, etc.
-                days_to_subtract_for_last_sunday = (now.weekday() - 6 + 7) % 7 
-                recap_trigger_time = (now - timedelta(days=days_to_subtract_for_last_sunday)).replace(hour=19, minute=0, second=0, microsecond=0)
-                
-                # If the current time is still before `recap_trigger_time` (e.g., if we're on a Monday and `recap_trigger_time` was computed as the *next* Sunday),
-                # we need to push it back another week to ensure `recap_trigger_time` is always the *most recent passed or current* Sunday 7 PM UTC.
-                if now < recap_trigger_time:
+            if now.weekday() != 6 or now < recap_trigger_time: # If not Sunday 7 PM UTC yet, calculate previous Sunday 7 PM UTC
+                days_since_sunday = (now.weekday() - 6 + 7) % 7 # 0 for Sunday, 1 for Monday, ..., 6 for Saturday
+                recap_trigger_time = (now - timedelta(days=days_since_sunday)).replace(hour=19, minute=0, second=0, microsecond=0)
+                if now < recap_trigger_time: # If it's earlier in the week than the last Sunday 7 PM
                     recap_trigger_time -= timedelta(weeks=1)
 
-            # Check if we should run the recap:
-            # 1. Is the current time past the trigger time for this week's recap? (`now >= recap_trigger_time`)
-            # 2. Was the last recap sent *before* this week's trigger time? (`last_recap_dt < recap_trigger_time`)
             if now >= recap_trigger_time and last_recap_dt < recap_trigger_time:
                 url = f"https://api.wiseoldman.net/v2/groups/{WOM_CLAN_ID}/gained?period=week&metric=overall"
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as response:
-                        if response.status == 200:
+                    try:
+                        async with session.get(url) as response:
+                            response.raise_for_status()
                             data = await response.json()
                             recap_text = await generate_recap_text(data)
                             embed = discord.Embed(title="\n\n Weekly Recap from the Taskmaster", description=recap_text, color=discord.Color.from_rgb(100, 150, 255))
                             embed.set_footer(text=f"Recap for the week ending {now.strftime('%B %d, %Y')}")
                             await recap_channel.send(embed=embed)
                             
-                            # Update the last recap sent timestamp
                             await conn_recap.execute("INSERT INTO bot_settings (key, value) VALUES ('last_recap_sent', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", now.isoformat())
-                        else:
-                            print(f"Error fetching WOM data for weekly recap: {response.status}")
+                    except aiohttp.ClientError as e:
+                        print(f"Error fetching WOM data for weekly recap: {e}")
+                    except Exception as e:
+                        print(f"An unexpected error during weekly recap: {e}")
     
     # --- SOTW Processing ---
     sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
     if sotw_channel:
-        # Determine the guild context once for this channel
         current_guild = sotw_channel.guild 
         if not current_guild:
             print(f"Warning: Could not determine guild for SOTW channel {SOTW_CHANNEL_ID}. Skipping SOTW processing.")
-            return # Exit if guild context is missing
+            return
 
         async with bot.db_pool.acquire() as conn:
             competitions = await conn.fetch("SELECT * FROM active_competitions")
@@ -881,25 +977,34 @@ async def event_manager():
                 if now > ends_at and not comp['winners_awarded']:
                     details_url = f"https://api.wiseoldman.net/v2/competitions/{comp['id']}"
                     async with aiohttp.ClientSession() as session:
-                        async with session.get(details_url) as response:
-                            if response.status == 200:
+                        try:
+                            async with session.get(details_url) as response:
+                                response.raise_for_status()
                                 comp_data = await response.json()
                                 point_values = [100, 50, 25] # 1st, 2nd, 3rd
                                 
+                                # Collect user point awarding tasks to run concurrently
+                                award_tasks = []
                                 for i, participant in enumerate(comp_data.get('participations', [])[:3]):
                                     osrs_name = participant['player']['displayName']
                                     user_data = await conn.fetchrow("SELECT discord_id FROM user_links WHERE osrs_name = $1", osrs_name)
                                     
                                     if user_data:
-                                        # Use current_guild for member lookup
                                         member = current_guild.get_member(user_data['discord_id'])
                                         if member:
-                                            await award_points(member, point_values[i], f"placing #{i+1} in the {comp['title']} SOTW")
-                    
-                    # Update competition status AFTER all awards are processed and external API calls completed
+                                            award_tasks.append(award_points(member, point_values[i], f"placing #{i+1} in the {comp['title']} SOTW"))
+                                
+                                if award_tasks:
+                                    await asyncio.gather(*award_tasks)
+
+                        except aiohttp.ClientError as e:
+                            print(f"Error fetching WOM competition details for SOTW {comp['id']}: {e}")
+                        except Exception as e:
+                            print(f"Unexpected error during SOTW winner awarding for {comp['id']}: {e}")
+
                     await conn.execute("UPDATE active_competitions SET winners_awarded = TRUE WHERE id = $1", comp['id'])
                 
-                # Send reminders (ensure await before DB update)
+                # Send reminders 
                 if not comp['final_ping_sent'] and (ends_at - now) <= timedelta(hours=1):
                     reminder_embed = discord.Embed(title="\n\n Final Hour!", description=f"The **{comp['title']}** competition ends in less than an hour!", color=discord.Color.red(), url=f"https://wiseoldman.net/competitions/{comp['id']}")
                     await sotw_channel.send(content="@everyone", embed=reminder_embed)
@@ -920,11 +1025,17 @@ async def event_manager():
 
     # --- Giveaway Processing ---
     async with bot.db_pool.acquire() as conn_gw:
-        ended_giveaways = await conn_gw.fetch("SELECT * FROM giveaways WHERE ends_at < $1 AND is_active = TRUE", now)
-        for giveaway in ended_giveaways:
-            await end_giveaway(giveaway)
+        ended_giveaways_task = conn_gw.fetch("SELECT * FROM giveaways WHERE ends_at < $1 AND is_active = TRUE", now)
+        active_giveaways_task = conn_gw.fetch("SELECT message_id, channel_id, ends_at FROM giveaways WHERE is_active = TRUE")
+
+        ended_giveaways, active_giveaways = await asyncio.gather(ended_giveaways_task, active_giveaways_task)
         
-        active_giveaways = await conn_gw.fetch("SELECT message_id, channel_id, ends_at FROM giveaways WHERE is_active = TRUE")
+        # Process ended giveaways first
+        ended_giveaway_tasks = [end_giveaway(giveaway) for giveaway in ended_giveaways]
+        if ended_giveaway_tasks: await asyncio.gather(*ended_giveaway_tasks)
+        
+        # Update active giveaway entry counts
+        update_tasks = []
         for giveaway in active_giveaways:
             try:
                 entry_count = await conn_gw.fetchval("SELECT COUNT(user_id) FROM giveaway_entries WHERE message_id = $1", giveaway['message_id'])
@@ -933,28 +1044,27 @@ async def event_manager():
                 message = await channel.fetch_message(giveaway['message_id'])
                 embed = message.embeds[0]
                 
-                # FIX: More robust logic for updating entry count field
                 entry_field_index = -1
                 for i, field in enumerate(embed.fields):
                     if "Entries" in field.name:
                         entry_field_index = i
                         break
                 
-                new_entry_value = f"\n\n **Entries:** {entry_count}"
+                new_entry_value = f"**Entries:** {entry_count}"
                 
                 if entry_field_index != -1:
                     if embed.fields[entry_field_index].value != new_entry_value:
                         embed.set_field_at(entry_field_index, name="Entries", value=new_entry_value, inline=True)
-                        await message.edit(embed=embed)
+                        update_tasks.append(message.edit(embed=embed))
                 else:
-                    # Add new field. Can choose index if order is important.
                     embed.add_field(name="Entries", value=new_entry_value, inline=True)
-                    await message.edit(embed=embed)
+                    update_tasks.append(message.edit(embed=embed))
 
             except discord.NotFound:
-                await conn_gw.execute("UPDATE giveaways SET is_active = FALSE WHERE message_id = $1", giveaway['message_id'])
+                update_tasks.append(conn_gw.execute("UPDATE giveaways SET is_active = FALSE WHERE message_id = $1", giveaway['message_id']))
             except Exception as e:
                 print(f"Error updating giveaway entry count for {giveaway['message_id']}: {e}")
+        if update_tasks: await asyncio.gather(*update_tasks)
 
     # NEW: PVM Event reminders and cleanup
     pvm_channel = bot.get_channel(PVM_EVENT_CHANNEL_ID)
@@ -962,24 +1072,25 @@ async def event_manager():
         async with bot.db_pool.acquire() as conn_pvm:
             upcoming_events = await conn_pvm.fetch("SELECT * FROM pvm_events WHERE is_active = TRUE AND reminder_sent = FALSE AND starts_at - INTERVAL '1 hour' <= $1", now)
 
+            pvm_tasks = []
             for event in upcoming_events:
                 if event['starts_at'] > now:
-                    # Send 1-hour reminder
                     event_embed = discord.Embed(
                         title=f"\n\n PVM Event Reminder: {event['title']}",
                         description=f"Our grand expedition to '{event['title']}' begins in less than an hour! Gather your comrades, prepare your gear, and brace yourselves for adventure!\n\nStarts: <t:{int(event['starts_at'].timestamp())}:R>\n[Event Details]({event['message_id']})",
                         color=discord.Color.orange()
                     )
                     event_embed.set_footer(text="May your adventures be glorious!")
-                    await pvm_channel.send(content="@here", embed=event_embed)
-                    await conn_pvm.execute("UPDATE pvm_events SET reminder_sent = TRUE WHERE id = $1", event['id'])
+                    pvm_tasks.append(pvm_channel.send(content="@here", embed=event_embed))
+                    pvm_tasks.append(conn_pvm.execute("UPDATE pvm_events SET reminder_sent = TRUE WHERE id = $1", event['id']))
                 else:
-                    # Event has passed, mark as inactive
-                    await conn_pvm.execute("UPDATE pvm_events SET is_active = FALSE WHERE id = $1", event['id'])
+                    pvm_tasks.append(conn_pvm.execute("UPDATE pvm_events SET is_active = FALSE WHERE id = $1", event['id']))
+            if pvm_tasks: await asyncio.gather(*pvm_tasks)
 
-async def handle_http(request):
+async def handle_http(request: web.Request):
     """A simple HTTP handler for health checks."""
     return web.Response(text="Bot is running.")
+
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_http)
@@ -1000,8 +1111,6 @@ async def on_ready():
     print(f"{bot.user} is online and ready!")
 
     asyncio.create_task(load_item_mapping())
-
-    # FIX: Corrected typo from awaitsetup_database()
     await setup_database_pool() 
     
     event_manager.start()
@@ -1026,6 +1135,33 @@ async def on_ready():
     print("Persistent views re-registered.")
 
 # --- BOT COMMANDS ---
+
+@bot.command(name="stats")
+async def stats_command(ctx: discord.ApplicationContext, username: str):
+    async with ctx.typing():
+        async with aiohttp.ClientSession() as session:
+            username, skills_data = await fetch_osrs_stats(session, username)
+            if not skills_data:
+                await ctx.send(f"Could not fetch stats for `{username}`.")
+                return
+            embed = build_individual_embed(username, skills_data)
+            await ctx.send(embed=embed)
+
+@bot.command(name="leaderboard")
+async def leaderboard_command(ctx: discord.ApplicationContext):
+    async with ctx.typing():
+        members = await fetch_clan_members(WOM_CLAN_ID)
+        if not members:
+            await ctx.send("Could not fetch clan members.")
+            return
+        stats_dict = await fetch_all_stats_async(members)
+        if not stats_dict:
+            await ctx.send("Could not fetch stats for clan members.")
+            return
+        embed = build_leaderboard_embed(stats_dict)
+        await ctx.send(embed=embed)
+
+
 admin = bot.create_group("admin", "Admin-only commands for managing the bot and server.")
 @admin.command(name="announce", description="Send a message as the bot to a specific channel.")
 @discord.default_permissions(manage_guild=True)
@@ -1062,23 +1198,28 @@ async def award_sotw_winners(ctx: discord.ApplicationContext, competition_id: di
     await ctx.defer(ephemeral=True)
     details_url = f"https://api.wiseoldman.net/v2/competitions/{competition_id}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(details_url) as response:
-            if response.status != 200: return await ctx.respond(f"Could not fetch details for competition ID {competition_id}.")
-            comp_data = await response.json()
+        try:
+            async with session.get(details_url) as response:
+                response.raise_for_status()
+                comp_data = await response.json()
+        except aiohttp.ClientError as e:
+            return await ctx.respond(f"Could not fetch details for competition ID {competition_id}. Error: {e}", ephemeral=True)
     awarded_to = []
     point_values = [100, 50, 25]
-    for i, participant in enumerate(comp_data.get('participations', [])[:3]):
-        osrs_name = participant['player']['displayName']
-        async with bot.db_pool.acquire() as conn:
+    async with bot.db_pool.acquire() as conn:
+        award_tasks = []
+        for i, participant in enumerate(comp_data.get('participations', [])[:3]):
+            osrs_name = participant['player']['displayName']
             user_data = await conn.fetchrow("SELECT discord_id FROM user_links WHERE osrs_name = $1", osrs_name)
-        if user_data:
-            # FIX: Use ctx.guild for member lookup
-            member = ctx.guild.get_member(user_data['discord_id']) 
-            if member:
-                await award_points(member, point_values[i], f"placing #{i+1} in the {comp_data['title']} SOTW")
-                awarded_to.append(f"#{i+1}: {member.display_name} ({point_values[i]} points)")
-    if not awarded_to: return await ctx.respond("No winners could be found or linked for that competition.")
-    await ctx.respond("Successfully awarded points to:\n" + "\n".join(awarded_to))
+            if user_data:
+                member = ctx.guild.get_member(user_data['discord_id']) 
+                if member:
+                    award_tasks.append(award_points(member, point_values[i], f"placing #{i+1} in the {comp_data['title']} SOTW"))
+                    awarded_to.append(f"#{i+1}: {member.display_name} ({point_values[i]} points)")
+        if award_tasks:
+            await asyncio.gather(*award_tasks)
+    if not awarded_to: return await ctx.respond("No winners could be found or linked for that competition.", ephemeral=True)
+    await ctx.respond("Successfully awarded points to:\n" + "\n".join(awarded_to), ephemeral=True)
 
 @admin.command(name="check_items", description="Check the status of the OSRS item mapping.")
 @discord.default_permissions(manage_guild=True)
@@ -1086,14 +1227,14 @@ async def check_items(ctx: discord.ApplicationContext):
     if bot.item_mapping:
         await ctx.respond(f"\n\n The item list is loaded with **{len(bot.item_mapping)}** items.", ephemeral=True)
     else:
-        await ctx.respond("\n\n The item list is not loaded yet. Please check the logs for errors.", ephemeral=True)
+        await ctx.respond("\n\n The item list is not loaded yet. Please wait or check the logs for errors.", ephemeral=True)
 
 ge = bot.create_group("ge", "Commands for the Grand Exchange.")
 async def item_autocomplete(ctx: discord.AutocompleteContext):
     """Provides autocomplete suggestions for OSRS items."""
     query = ctx.value.lower()
     if not query:
-        popular_items = ["Twisted bow", "Scythe of vitur", "Abyssal whip", "Dragon claws"]
+        popular_items = ["Twisted bow", "Scythe of vitur", "Abyssal whip", "Dragon claws"] # Example popular items
         return popular_items
     matches = [name.title() for name in bot.item_mapping.keys() if name.startswith(query)]
     return matches[:25]
@@ -1113,8 +1254,7 @@ async def price(ctx: discord.ApplicationContext, item: discord.Option(str, "The 
     async with aiohttp.ClientSession(headers=headers) as session:
         try:
             async with session.get(url) as response:
-                if response.status != 200:
-                    return await ctx.respond(f"Error fetching price data (Status: {response.status}). Please try again later.", ephemeral=True)
+                response.raise_for_status()
                 price_data = await response.json()
                 embed = discord.Embed(title=f"Price Check: {item_details['name']}", color=discord.Color.gold(), timestamp=datetime.now(timezone.utc))
                 icon_url = item_details.get('icon')
@@ -1131,11 +1271,12 @@ async def price(ctx: discord.ApplicationContext, item: discord.Option(str, "The 
                 embed.add_field(name="Last Sell", value=f"Updated {sell_time}", inline=True)
                 embed.set_footer(text="Price data from osrs.cloud")
                 await ctx.respond(embed=embed)
+        except aiohttp.ClientError as e:
+            print(f"Error fetching price data for {item_details['name']}: {e}")
+            await ctx.respond(f"Error fetching price data (Status: {response.status if 'response' in locals() else 'N/A'}). Please try again later.", ephemeral=True)
         except Exception as e:
-            print(f"Error in /ge price command: {e}")
+            print(f"An unexpected error occurred in /ge price command: {e}")
             await ctx.respond("An unexpected error occurred while fetching price data.", ephemeral=True)
-
-# Add to the 'ge' SlashCommandGroup (after the existing /ge price command)
 
 @ge.command(name="value", description="Calculate the total GE value of multiple items.")
 async def calculate_value(
@@ -1150,60 +1291,64 @@ async def calculate_value(
     parsed_items_output = []
     unmatched_items = []
 
-    # Regex to parse 'QUANTITY ITEM_NAME' (handles k for thousands, m for millions, and optional spaces/commas)
-    # It finds patterns like '10k raw sharks', '2m runes', '1 twisted bow'.
-    # The '(?:,|$)' at the end makes the comma optional or matches end of string.
     item_regex_pattern = r"(\d+(?:\.\d+)?[km]?)\s+([a-zA-Z0-9\s-]+?)(?:,|$)"
-    
-    # Find all matches in the input string
-    matches = re.findall(item_regex_pattern, item_list.lower() + ',') # Add a comma to ensure last item is caught
+    matches = re.findall(item_regex_pattern, item_list.lower() + ',') 
 
     if not matches:
         return await ctx.respond("Invalid item list format. Please use 'QUANTITY ITEM_NAME, QUANTITY ITEM_NAME' (e.g., '10k raw sharks, 2m runes').", ephemeral=True)
 
-    for quantity_str, item_name_raw in matches:
-        item_name = item_name_raw.strip()
-        quantity = 0.0
+    price_fetch_tasks = []
+    items_to_process = []
 
-        # Parse quantity (e.g., "10k", "2m", "5")
-        if 'k' in quantity_str:
-            quantity = float(quantity_str.replace('k', '')) * 1_000
-        elif 'm' in quantity_str:
-            quantity = float(quantity_str.replace('m', '')) * 1_000_000
-        else:
-            quantity = float(quantity_str)
+    async with aiohttp.ClientSession(headers={'User-Agent': 'GrazyBot/1.0'}) as session:
+        for quantity_str, item_name_raw in matches:
+            item_name = item_name_raw.strip()
+            quantity = 0.0
 
-        # Find the item in the bot's loaded mapping
-        matched_item = bot.item_mapping.get(item_name)
-        if not matched_item:
-            # Try more flexible matching (e.g., singular/plural, slightly different spacing)
-            # This can be expanded significantly for better fuzzy matching
-            matched_item_name = next((k for k in bot.item_mapping if item_name in k or k.startswith(item_name)), None)
-            if matched_item_name:
-                matched_item = bot.item_mapping[matched_item_name]
-                item_name = matched_item_name # Use the canonical name
+            if 'k' in quantity_str:
+                quantity = float(quantity_str.replace('k', '')) * 1_000
+            elif 'm' in quantity_str:
+                quantity = float(quantity_str.replace('m', '')) * 1_000_000
+            else:
+                quantity = float(quantity_str)
 
-        if matched_item:
-            item_id = matched_item['id']
-            url = f"https://prices.osrs.cloud/api/v1/latest/item/{item_id}"
-            headers = {'User-Agent': 'GrazyBot/1.0'}
-            
+            matched_item = bot.item_mapping.get(item_name)
+            if not matched_item:
+                matched_item_name = next((k for k in bot.item_mapping if item_name in k or k.startswith(item_name)), None)
+                if matched_item_name:
+                    matched_item = bot.item_mapping[matched_item_name]
+                    item_name = matched_item_name 
+
+            if matched_item:
+                items_to_process.append({'quantity': quantity, 'matched_item': matched_item})
+                price_fetch_tasks.append(session.get(f"https://prices.osrs.cloud/api/v1/latest/item/{matched_item['id']}"))
+            else:
+                unmatched_items.append(f"{quantity_str} {item_name_raw.title()} (Item not found in database)")
+        
+        # Execute all price fetch requests concurrently
+        responses = await asyncio.gather(*price_fetch_tasks, return_exceptions=True)
+
+        for i, response_result in enumerate(responses):
+            item_info = items_to_process[i]
+            quantity = item_info['quantity']
+            matched_item = item_info['matched_item']
+
+            if isinstance(response_result, Exception):
+                unmatched_items.append(f"{int(quantity):,} x {matched_item['name']} (Price fetch error: {response_result})")
+                continue
+
+            response = response_result # It's an aiohttp.ClientResponse object
             try:
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            price_data = await response.json()
-                            # Use 'high' (instant buy) price for valuing items
-                            current_price = price_data.get('high', 0)
-                            item_value = current_price * quantity
-                            total_value += item_value
-                            parsed_items_output.append(f"{int(quantity):,} x {matched_item['name']} @ {current_price:,} gp each = {int(item_value):,} gp")
-                        else:
-                            unmatched_items.append(f"{int(quantity):,} x {matched_item['name']} (Price fetch failed: {response.status})")
-            except Exception:
-                unmatched_items.append(f"{int(quantity):,} x {matched_item['name']} (Price fetch error)")
-        else:
-            unmatched_items.append(f"{quantity_str} {item_name_raw.title()} (Item not found in database)")
+                response.raise_for_status()
+                price_data = await response.json()
+                current_price = price_data.get('high', 0)
+                item_value = current_price * quantity
+                total_value += item_value
+                parsed_items_output.append(f"{int(quantity):,} x {matched_item['name']} @ {current_price:,} gp each = {int(item_value):,} gp")
+            except aiohttp.ClientError as e:
+                unmatched_items.append(f"{int(quantity):,} x {matched_item['name']} (Price fetch failed: {response.status} - {e})")
+            except Exception as e:
+                unmatched_items.append(f"{int(quantity):,} x {matched_item['name']} (Unexpected price processing error: {e})")
 
     embed = discord.Embed(title="\n\n Grand Exchange Value Calculator", color=discord.Color.dark_teal())
     
@@ -1211,7 +1356,7 @@ async def calculate_value(
         embed.add_field(name="Items Valued", value="\n".join(parsed_items_output), inline=False)
         embed.add_field(name="Total Estimated Value", value=f"**{int(total_value):,} gp**", inline=False)
     else:
-        embed.description = "No items could be valued or found."
+        embed.description = "No items could be valued or found." if not unmatched_items else ""
 
     if unmatched_items:
         embed.add_field(name="Could Not Value (or Not Found)", value="\n".join(unmatched_items), inline=False)
@@ -1220,10 +1365,10 @@ async def calculate_value(
     await ctx.respond(embed=embed)
 sotw = bot.create_group("sotw", "Commands for Skill of the Week")
 @sotw.command(name="start", description="Manually start a new SOTW competition.")
-async def start(ctx, skill: discord.Option(str, choices=WOM_SKILLS), duration_days: discord.Option(int, default=7)):
+async def start(ctx: discord.ApplicationContext, skill: discord.Option(str, choices=WOM_SKILLS), duration_days: discord.Option(int, default=7)):
     await ctx.defer(ephemeral=True)
     data, error = await create_competition(WOM_CLAN_ID, skill, duration_days)
-    if error: await ctx.respond(error); return
+    if error: await ctx.respond(error, ephemeral=True); return
     sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
     if sotw_channel:
         embed = await create_competition_embed(data, ctx.author)
@@ -1242,7 +1387,7 @@ async def poll(ctx: discord.ApplicationContext):
     sotw_channel = bot.get_channel(SOTW_CHANNEL_ID)
     if sotw_channel:
         poll_message = await sotw_channel.send(embed=embed, view=view)
-        await ctx.respond("SOTW Poll created!", ephemeral=True); view.message_id = poll_message.id
+        await ctx.respond("SOTW Poll created!", ephemeral=True)
         bot.active_polls[ctx.guild.id] = view
     else:
         await ctx.respond("Error: SOTW Channel ID not configured correctly.", ephemeral=True)
@@ -1252,20 +1397,30 @@ async def view(ctx: discord.ApplicationContext):
     await ctx.defer()
     list_url = f"https://api.wiseoldman.net/v2/groups/{WOM_CLAN_ID}/competitions"
     async with aiohttp.ClientSession() as session:
-        async with session.get(list_url) as response:
-            if response.status != 200: return await ctx.respond("Could not fetch competition list.")
-            competitions = await response.json()
-            if not competitions: return await ctx.respond("This clan has no competitions on Wise Old Man.")
-            latest_comp_id = competitions[0]['id']
+        try:
+            async with session.get(list_url) as response:
+                response.raise_for_status()
+                competitions = await response.json()
+        except aiohttp.ClientError as e:
+            return await ctx.respond(f"Could not fetch competition list: {e}", ephemeral=True)
+
+    if not competitions:
+        return await ctx.respond("This clan has no competitions on Wise Old Man.", ephemeral=True)
+    
+    latest_comp_id = competitions[0]['id']
     details_url = f"https://api.wiseoldman.net/v2/competitions/{latest_comp_id}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(details_url) as response:
-            if response.status != 200: return await ctx.respond(f"Could not fetch details for competition ID {latest_comp_id}.")
-            data = await response.json()
+        try:
+            async with session.get(details_url) as response:
+                response.raise_for_status()
+                data = await response.json()
+        except aiohttp.ClientError as e:
+            return await ctx.respond(f"Could not fetch details for competition ID {latest_comp_id}. Error: {e}", ephemeral=True)
+
     embed = discord.Embed(title=f"Leaderboard: {data['title']}", description=f"Current standings for the **{data['metric'].capitalize()}** competition.", color=discord.Color.purple(), url=f"https://wiseoldman.net/competitions/{data['id']}")
     leaderboard_text = ""
     for i, player in enumerate(data['participations'][:10]):
-        rank_emoji = {1: "\n\n", 2: "\n\n", 3: "\n\n"}.get(i + 1, f"`{i + 1}.`")
+        rank_emoji = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`") # Using emojis for top 3
         leaderboard_text += f"{rank_emoji} **{player['player']['displayName']}**: {player['progress']['gained']:,} XP\n"
     if not leaderboard_text: leaderboard_text = "No participants have gained XP yet."
     embed.add_field(name="Top 10", value=leaderboard_text, inline=False)
@@ -1274,7 +1429,6 @@ async def view(ctx: discord.ApplicationContext):
     await ctx.respond(embed=embed)
 
 raffle = bot.create_group("raffle", "Commands for managing raffles.")
-# FIX: Update raffle_start to create unique raffles
 @raffle.command(name="start", description="Start a new raffle.")
 @discord.default_permissions(manage_events=True)
 async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(str, "What is the prize?"), duration_days: discord.Option(float, "How many days will it last?")):
@@ -1282,7 +1436,6 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
     
     ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
     
-    # Prepare embed and message first, to get message_id
     details = {"prize": prize}
     ai_embed_data = await generate_announcement_json("raffle_start", details)
     embed = discord.Embed.from_dict(ai_embed_data)
@@ -1294,14 +1447,12 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
     if not raffle_channel:
         await ctx.respond("Error: Raffle Channel ID not configured correctly.", ephemeral=True); return
 
-    raffle_message = await raffle_channel.send(embed=embed) # Send message to get its ID
+    raffle_message = await raffle_channel.send(embed=embed) 
 
-    # FIX: Insert into raffles, get new ID
     async with bot.db_pool.acquire() as conn:
         new_raffle_id = await conn.fetchval("INSERT INTO raffles (prize, ends_at, message_id, channel_id) VALUES ($1, $2, $3, $4) RETURNING id",
                                             prize, ends_at, raffle_message.id, raffle_channel.id)
     
-    # Update the embed with Raffle ID in footer for user reference
     updated_embed = raffle_message.embeds[0]
     updated_embed.set_footer(text=f"Raffle ID: {new_raffle_id} | Started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
     await raffle_message.edit(embed=updated_embed)
@@ -1309,17 +1460,15 @@ async def start_raffle(ctx: discord.ApplicationContext, prize: discord.Option(st
     await send_global_announcement("raffle_start", {"prize": prize}, raffle_message.jump_url)
     await ctx.respond(f"Raffle (ID: {new_raffle_id}) for **{prize}** created successfully!", ephemeral=True)
 
-# FIX: Update enter_raffle to target the latest active raffle
-@raffle.command(name="enter", description="Get one ticket for the current raffle (max 10).")
+@raffle.command(name="enter", description="Get one ticket for the current raffle (max 10)." )
 async def enter_raffle(ctx: discord.ApplicationContext):
     await ctx.defer(ephemeral=True)
     async with bot.db_pool.acquire() as conn:
-        # Find the latest active raffle
         raffle_data = await conn.fetchrow("SELECT id, prize FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
         if not raffle_data:
             return await ctx.respond("There is no active raffle to enter right now.", ephemeral=True)
         
-        raffle_id, prize = raffle_data
+        raffle_id, prize = raffle_data['id'], raffle_data['prize']
         self_entries = await conn.fetchval("SELECT COUNT(*) FROM raffle_entries WHERE user_id = $1 AND raffle_id = $2 AND source = 'self'", ctx.author.id, raffle_id)
         if self_entries >= 10:
             return await ctx.respond(f"You have already claimed your maximum of 10 tickets for the '{prize}' raffle!", ephemeral=True)
@@ -1364,34 +1513,36 @@ async def view_tickets(ctx: discord.ApplicationContext):
         raffle_data = await conn.fetchrow("SELECT id, prize FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
         if not raffle_data:
             return await ctx.respond("There is no active raffle.")
-        raffle_id, prize = raffle_data
+        raffle_id, prize = raffle_data['id'], raffle_data['prize']
         entries = await conn.fetch("SELECT user_id, COUNT(user_id) FROM raffle_entries WHERE raffle_id = $1 GROUP BY user_id ORDER BY COUNT(user_id) DESC", raffle_id)
     embed = discord.Embed(title=f"\n\n Raffle Tickets for '{prize}'", color=discord.Color.gold())
     if not entries:
         embed.description = "No tickets have been given out yet for this raffle."
     else:
         description = ""
-        for entry in entries[:20]: # Show top 20
+        # Fetch all members concurrently
+        member_fetches = [ctx.guild.fetch_member(entry['user_id']) for entry in entries[:20]]
+        members = await asyncio.gather(*member_fetches, return_exceptions=True)
+
+        for i, entry in enumerate(entries[:20]): # Show top 20
             user_id, count = entry['user_id'], entry['count']
-            try:
-                member = await ctx.guild.fetch_member(user_id)
-                description += f"**{member.display_name}**: {count} ticket(s)\n"
-            except discord.NotFound:
-                continue # Skip if member left the server
+            member_result = members[i]
+            if isinstance(member_result, discord.Member):
+                description += f"**{member_result.display_name}**: {count} ticket(s)\n"
+            else: # Handle exceptions, e.g., member not found
+                description += f"*User not in server? (ID: {user_id})*: {count} ticket(s)\n"
         embed.description = description
     await ctx.respond(embed=embed)
 
-# FIX: draw_now to target a specific raffle (or the latest ended one)
 @raffle.command(name="draw_now", description="ADMIN: Immediately ends a raffle and draws a winner.")
 @discord.default_permissions(manage_events=True)
 async def draw_now(ctx: discord.ApplicationContext, raffle_id: discord.Option(int, "The ID of the raffle to draw. Leave blank to draw the oldest ended raffle.", required=False)):
     await ctx.defer(ephemeral=True)
     channel = bot.get_channel(RAFFLE_CHANNEL_ID)
-    if not channel: return await ctx.respond("Error: Raffle channel not found.")
+    if not channel: return await ctx.respond("Error: Raffle channel not found.", ephemeral=True)
 
     if raffle_id:
         async with bot.db_pool.acquire() as conn:
-            # Set ends_at to now for specific raffle if it's still active or not drawn
             updated_id = await conn.fetchval("UPDATE raffles SET ends_at = NOW() WHERE id = $1 AND winner_id IS NULL RETURNING id", raffle_id)
         if not updated_id:
             return await ctx.respond(f"Raffle ID {raffle_id} not found or already ended/drawn.", ephemeral=True)
@@ -1399,7 +1550,6 @@ async def draw_now(ctx: discord.ApplicationContext, raffle_id: discord.Option(in
     result = await draw_raffle_winner(channel) 
     await ctx.respond(f"Successfully triggered winner drawing: {result}", ephemeral=True)
 
-# FIX: cancel_raffle to target a specific raffle
 @raffle.command(name="cancel", description="ADMIN: Cancels a specific raffle without drawing a winner.")
 @discord.default_permissions(manage_events=True)
 async def cancel_raffle(ctx: discord.ApplicationContext, raffle_id: discord.Option(int, "The ID of the raffle to cancel.")):
@@ -1412,7 +1562,6 @@ async def cancel_raffle(ctx: discord.ApplicationContext, raffle_id: discord.Opti
         
         prize, message_id = raffle_data['prize'], raffle_data['message_id']
         
-        # Delete the raffle and its entries (CASCADE takes care of entries)
         await conn.execute("DELETE FROM raffles WHERE id = $1", raffle_id)
     
     channel = bot.get_channel(RAFFLE_CHANNEL_ID)
@@ -1421,7 +1570,7 @@ async def cancel_raffle(ctx: discord.ApplicationContext, raffle_id: discord.Opti
             original_message = await channel.fetch_message(message_id)
             await original_message.edit(content=f"**Raffle for {prize} (ID: {raffle_id}) has been cancelled!**", embed=None, view=None)
         except discord.NotFound:
-            pass # Message already deleted
+            pass 
         await channel.send(f"The raffle for **{prize}** (ID: {raffle_id}) has been cancelled by an admin.")
     await ctx.respond(f"Raffle (ID: {raffle_id}) successfully cancelled.", ephemeral=True)
 
@@ -1430,10 +1579,12 @@ events = bot.create_group("events", "View all active clan events.")
 async def view_events(ctx: discord.ApplicationContext):
     await ctx.defer()
     async with bot.db_pool.acquire() as conn:
-        comp = await conn.fetchrow("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
-        raf = await conn.fetchrow("SELECT * FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
-        giveaway = await conn.fetchrow("SELECT * FROM giveaways WHERE is_active = TRUE AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
-        pvm_event = await conn.fetchrow("SELECT * FROM pvm_events WHERE is_active = TRUE AND starts_at > NOW() ORDER BY starts_at ASC LIMIT 1")
+        comp_task = conn.fetchrow("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
+        raf_task = conn.fetchrow("SELECT * FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
+        giveaway_task = conn.fetchrow("SELECT * FROM giveaways WHERE is_active = TRUE AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
+        pvm_event_task = conn.fetchrow("SELECT * FROM pvm_events WHERE is_active = TRUE AND starts_at > NOW() ORDER BY starts_at ASC LIMIT 1")
+
+        comp, raf, giveaway, pvm_event = await asyncio.gather(comp_task, raf_task, giveaway_task, pvm_event_task)
 
     embed = discord.Embed(title="\n\n Clan Event Status", description="Here's a look at all the events currently running.", color=discord.Color.blurple())
     
@@ -1447,24 +1598,27 @@ async def view_events(ctx: discord.ApplicationContext):
     
     if raf:
         raf_ends_dt = raf['ends_at']
+        raffle_channel_url = bot.get_channel(RAFFLE_CHANNEL_ID).jump_url if bot.get_channel(RAFFLE_CHANNEL_ID) else '#'
         raf_info = (f"**Prize:** {raf['prize']}\n"
-                    f"**Ends:** <t:{int(raf_ends_dt.timestamp())}:R>\n[View Raffle]({bot.get_channel(RAFFLE_CHANNEL_ID).jump_url if bot.get_channel(RAFFLE_CHANNEL_ID) else '#'}) ")
+                    f"**Ends:** <t:{int(raf_ends_dt.timestamp())}:R>\n[View Raffle]({raffle_channel_url}) ")
         embed.add_field(name="\n\n Active Raffle", value=raf_info, inline=False)
     else:
         embed.add_field(name="\n\n Active Raffle", value="There is no raffle currently running.", inline=False)
 
     if giveaway:
         gw_ends_dt = giveaway['ends_at']
+        giveaway_jump_url = bot.get_channel(giveaway['channel_id']).get_partial_message(giveaway['message_id']).jump_url if giveaway['channel_id'] and giveaway['message_id'] else '#'
         gw_info = (f"**Prize:** {giveaway['prize']}\n"
-                   f"**Ends:** <t:{int(gw_ends_dt.timestamp())}:R>\n[Enter Here]({bot.get_channel(giveaway['channel_id']).get_partial_message(giveaway['message_id']).jump_url})")
+                   f"**Ends:** <t:{int(gw_ends_dt.timestamp())}:R>\n[Enter Here]({giveaway_jump_url})")
         embed.add_field(name="\n\n Active Giveaway", value=gw_info, inline=False)
     else:
         embed.add_field(name="\n\n Active Giveaway", value="There are no active giveaways.", inline=False)
     
     if pvm_event:
         pvm_starts_dt = pvm_event['starts_at']
+        pvm_event_jump_url = bot.get_channel(pvm_event['channel_id']).get_partial_message(pvm_event['message_id']).jump_url if pvm_event['channel_id'] and pvm_event['message_id'] else '#'
         pvm_info = (f"**Event:** {pvm_event['title']}\n"
-                    f"**Starts:** <t:{int(pvm_starts_dt.timestamp())}:F> (<t:{int(pvm_starts_dt.timestamp())}:R>)\n[View Event]({bot.get_channel(pvm_event['channel_id']).get_partial_message(pvm_event['message_id']).jump_url if pvm_event['channel_id'] and pvm_event['message_id'] else '#'}) ")
+                    f"**Starts:** <t:{int(pvm_starts_dt.timestamp())}:F> (<t:{int(pvm_starts_dt.timestamp())}:R>)\n[View Event]({pvm_event_jump_url}) ")
         embed.add_field(name="\n\n Upcoming PVM Event", value=pvm_info, inline=False)
     else:
         embed.add_field(name="\n\n Upcoming PVM Event", value="No PVM events scheduled.", inline=False)
@@ -1473,17 +1627,20 @@ async def view_events(ctx: discord.ApplicationContext):
     await ctx.respond(embed=embed)
 
 bingo = bot.create_group("bingo", "Commands for clan bingo events.")
-# FIX: start_bingo to store and use the generated event ID, handle multiple events via is_active
 @bingo.command(name="start", description="Start a new bingo event.")
 @discord.default_permissions(manage_events=True)
 async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Option(int, "How many days the bingo event will last.")):
     await ctx.defer(ephemeral=True)
-    await ctx.respond("The Taskmaster is forging a new challenge... This may take a moment.", ephemeral=True)
+    await ctx.followup.send("The Taskmaster is forging a new challenge... This may take a moment.", ephemeral=True)
     
     try:
-        with open(TASKS_FILE, 'r') as f: all_tasks = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return await ctx.edit(content="Error: `tasks.json` not found or is invalid.")
+        # Synchronous file read moved to a thread pool
+        with open(TASKS_FILE, 'r') as f: 
+            all_tasks = await asyncio.to_thread(json.load, f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        return await ctx.edit(content=f"Error: `tasks.json` not found or is invalid: {e}")
+    except Exception as e:
+        return await ctx.edit(content=f"An unexpected error occurred reading tasks.json: {e}")
     
     tasks_by_difficulty = {"common": [], "uncommon": [], "rare": []}
     for task in all_tasks: tasks_by_difficulty.setdefault(task['difficulty'], []).append(task)
@@ -1492,7 +1649,7 @@ async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Op
     board_tasks = []
     for difficulty, count in board_composition.items():
         if len(tasks_by_difficulty.get(difficulty, [])) < count:
-            return await ctx.edit(content=f"Error: Not enough '{difficulty}' tasks in `tasks.json`.")
+            return await ctx.edit(content=f"Error: Not enough '{difficulty}' tasks in `tasks.json` to create a board. Need {count}, have {len(tasks_by_difficulty.get(difficulty, []))}.")
         board_tasks.extend(random.sample(tasks_by_difficulty[difficulty], count))
     
     if len(board_tasks) < 25:
@@ -1501,13 +1658,12 @@ async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Op
     random.shuffle(board_tasks); board_tasks = board_tasks[:25]
     
     async with bot.db_pool.acquire() as conn:
-        # FIX: Deactivate existing bingo event instead of deleting
         await conn.execute("UPDATE bingo_events SET is_active = FALSE WHERE is_active = TRUE")
         
         ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
         board_json = json.dumps(board_tasks)
         
-        image_path, error = generate_bingo_image(board_tasks)
+        image_path, error = await asyncio.to_thread(_generate_bingo_image_sync, board_tasks)
         if error: 
             return await ctx.edit(content=f"Failed to generate bingo image: {error}")
         
@@ -1517,26 +1673,25 @@ async def start_bingo(ctx: discord.ApplicationContext, duration_days: discord.Op
         
         ai_embed_data = await generate_announcement_json("bingo_start")
         embed = discord.Embed.from_dict(ai_embed_data)
-        file = discord.File(image_path, filename="bingo_board.png")
-        embed.set_image(url="attachment://bingo_board.png")
-        embed.add_field(name="Event Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
-        embed.set_footer(text=f"Bingo started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+        file_content = await asyncio.to_thread(open, image_path, 'rb') # Async open file
+        with file_content as f:
+            file = discord.File(f, filename="bingo_board.png")
+            embed.set_image(url="attachment://bingo_board.png")
+            embed.add_field(name="Event Ends", value=f"<t:{int(ends_at.timestamp())}:R>", inline=False)
+            embed.set_footer(text=f"Bingo started by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+            
+            message = await bingo_channel.send(embed=embed, file=file)
         
-        message = await bingo_channel.send(embed=embed, file=file)
-        
-        # FIX: Insert, and get the new event ID. is_active defaults to TRUE.
         current_bingo_event_id = await conn.fetchval("INSERT INTO bingo_events (ends_at, board_json, message_id) VALUES ($1, $2, $3) RETURNING id",
                                                    ends_at, board_json, message.id)
     
     await send_global_announcement("bingo_start", {}, message.jump_url)
     await ctx.edit(content=f"Bingo event (ID: {current_bingo_event_id}) created successfully!")
 
-# FIX: complete_task to link submission to the active event
 @bingo.command(name="complete", description="Submit a task for bingo completion.")
 async def complete_task(ctx: discord.ApplicationContext, task: discord.Option(str, "The name of the task you completed."), proof: discord.Option(str, "A URL link to a screenshot or video proof.")):
     await ctx.defer(ephemeral=True)
     async with bot.db_pool.acquire() as conn:
-        # Get the active bingo event ID and board
         event_data = await conn.fetchrow("SELECT id, board_json FROM bingo_events WHERE is_active = TRUE LIMIT 1")
         if not event_data:
             return await ctx.respond("There is no active bingo event.", ephemeral=True)
@@ -1548,7 +1703,6 @@ async def complete_task(ctx: discord.ApplicationContext, task: discord.Option(st
         if task not in task_names:
             return await ctx.respond("That task is not on the current bingo board.", ephemeral=True)
         
-        # FIX: Insert with event_id
         await conn.execute("INSERT INTO bingo_submissions (event_id, user_id, task_name, proof_url) VALUES ($1, $2, $3, $4)",
                            current_event_id, ctx.author.id, task, proof)
     await ctx.respond("Your submission has been sent to the admins for review!", ephemeral=True)
@@ -1562,13 +1716,18 @@ async def view_submissions(ctx: discord.ApplicationContext):
     if not pending:
         return await ctx.respond("There are no pending bingo submissions for the active event.", ephemeral=True)
     await ctx.respond("Here are the pending submissions for the active bingo event:", ephemeral=True)
+    # Send submission embeds concurrently if many
+    submission_sends = []
     for sub in pending:
         user = await bot.fetch_user(sub['user_id'])
         embed = discord.Embed(title="\n\n Bingo Submission", description=f"**Task:** {sub['task_name']}", color=discord.Color.yellow())
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
         embed.add_field(name="Proof", value=f"[Click to view]({sub['proof_url']})", inline=False)
         embed.set_footer(text=f"Submission ID: {sub['id']}")
-        await ctx.channel.send(embed=embed, view=SubmissionView(), ephemeral=True)
+        submission_sends.append(ctx.channel.send(embed=embed, view=SubmissionView(), ephemeral=True))
+    
+    if submission_sends:
+        await asyncio.gather(*submission_sends)
 
 @bingo.command(name="board", description="View the current bingo board.")
 async def view_board(ctx: discord.ApplicationContext):
@@ -1601,23 +1760,26 @@ async def view_rewards(ctx: discord.ApplicationContext):
             if not rewards:
                 embed.description = "There are currently no active rewards in the point store."
             else:
+                reward_fields = []
                 for reward in rewards:
                     role_reward_text = ""
                     role_reward_data = await conn.fetchrow("SELECT role_id FROM role_rewards WHERE reward_id = $1", reward['id'])
                     if role_reward_data:
                         role_id = role_reward_data['role_id']
-                        guild = ctx.guild # Use ctx.guild for dynamic role lookup
+                        guild = ctx.guild 
                         if guild:
-                            role = guild.get_role(role_id)
+                            role = guild.get_role(role_id) # get_role is efficient for cached roles
                             if role:
                                 role_reward_text = f"\n**Role:** {role.mention}"
                             else:
                                 role_reward_text = f"\n**Role ID:** {role_id} (Role not found in this guild)"
-                    embed.add_field(
-                        name=f"{reward['reward_name']} ({reward['point_cost']} points)",
-                        value=f"{reward['description'] or 'No description provided.'}{role_reward_text}",
-                        inline=False
-                    )
+                        else:
+                             role_reward_text = f"\n**Role ID:** {role_id} (Guild context missing)"
+                    reward_fields.append((f"{reward['reward_name']} ({reward['point_cost']} points)", f"{reward['description'] or 'No description provided.'}{role_reward_text}"))
+                
+                for name, value in reward_fields:
+                    embed.add_field(name=name, value=value, inline=False)
+
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
             embed.timestamp = datetime.now(timezone.utc)
             await ctx.respond(embed=embed)
@@ -1651,12 +1813,12 @@ async def redeem_reward(ctx: discord.ApplicationContext, reward_name: str):
             role_reward_data = await conn.fetchrow("SELECT role_id FROM role_rewards WHERE reward_id = $1", reward['id'])
             if role_reward_data:
                 role_id = role_reward_data['role_id']
-                guild = ctx.guild # FIX: Use ctx.guild for role lookup and member operations
+                guild = ctx.guild 
                 if guild:
-                    role = guild.get_role(role_id)
-                    if role:
-                        member = guild.get_member(ctx.user.id) # Get member from current guild
-                        if member:
+                    member = guild.get_member(ctx.user.id) 
+                    if member:
+                        role = guild.get_role(role_id)
+                        if role:
                             try:
                                 await member.add_roles(role)
                                 await ctx.followup.send(f"You have successfully redeemed '{reward['reward_name']}'! The role **{role.name}** has been added to you. Your new point balance is **{new_balance}**.", ephemeral=False)
@@ -1667,11 +1829,11 @@ async def redeem_reward(ctx: discord.ApplicationContext, reward_name: str):
                                 print(f"Error adding role {role.name} to {member.display_name}: {e}")
                                 await ctx.followup.send(f"You have successfully redeemed '{reward['reward_name']}'! Points deducted, but an error occurred while assigning the role. Your new point balance is **{new_balance}**.", ephemeral=False)
                         else:
-                            print(f"Could not find member {ctx.user.id} in guild {guild.name} for role assignment.")
-                            await ctx.followup.send(f"You have successfully redeemed '{reward['reward_name']}'! Points deducted, but I could not find your member profile in the guild to assign the role. Your new point balance is **{new_balance}**.", ephemeral=False)
+                            print(f"Role with ID {role_id} not found in guild {guild.name} for reward redemption.")
+                            await ctx.followup.send(f"You have successfully redeemed '{reward['reward_name']}'! Points deducted, but the associated role was not found in the guild. Your new point balance is **{new_balance}**.", ephemeral=False)
                     else:
-                        print(f"Role with ID {role_id} not found in guild {guild.name} for reward redemption.")
-                        await ctx.followup.send(f"You have successfully redeemed '{reward['reward_name']}'! Points deducted, but the associated role was not found in the guild. Your new point balance is **{new_balance}**.", ephemeral=False)
+                        print(f"Could not find member {ctx.user.id} in guild {guild.name} for role assignment.")
+                        await ctx.followup.send(f"You have successfully redeemed '{reward['reward_name']}'! Points deducted, but I could not find your member profile in the guild to assign the role. Your new point balance is **{new_balance}**.", ephemeral=False)
                 else:
                      print(f"Could not get guild {ctx.guild.id} for role assignment.")
                      await ctx.followup.send(f"You have successfully redeemed '{reward['reward_name']}'! Points deducted, but I could not access the guild to assign the role. Your new point balance is **{new_balance}**.", ephemeral=False)
@@ -1810,16 +1972,20 @@ async def view_entries(ctx: discord.ApplicationContext):
         embed.description += "\n\nNo one has entered yet."
     else:
         entrant_list = []
-        for entry in entries:
-            try:
-                member = ctx.guild.get_member(entry['user_id'])
-                if member: entrant_list.append(f"- {member.display_name} (`{member.name}`)")
-                else: entrant_list.append(f"- *User not in server? (ID: {entry['user_id']})*\n(This may be a user who left the server or has DMs disabled)")
-            except Exception:
-                entrant_list.append(f"- *Unknown User (ID: {entry['user_id']})*\n(Error fetching user details)")
+        # Fetch all members concurrently
+        member_fetches = [ctx.guild.fetch_member(entry['user_id']) for entry in entries]
+        members = await asyncio.gather(*member_fetches, return_exceptions=True)
+
+        for i, entry in enumerate(entries):
+            member_result = members[i]
+            if isinstance(member_result, discord.Member):
+                entrant_list.append(f"- {member_result.display_name} (`{member_result.name}`)")
+            else: # Handle exceptions, e.g., member not found
+                entrant_list.append(f"- *User not in server? (ID: {entry['user_id']})*\n(This may be a user who left the server or has DMs disabled)")
+
         entrants_text = "\n".join(entrant_list)
-        if len(entrants_text) > 4000:
-             entrants_text = entrants_text[:4000] + "\n...and more."
+        if len(entrants_text) > MAX_FIELD_LENGTH: # Use MAX_FIELD_LENGTH for embed field limit
+             entrants_text = entrants_text[:(MAX_FIELD_LENGTH - 20)] + "\n...and more."
         embed.description += f"\n\n{entrants_text}"
     await ctx.respond(embed=embed, ephemeral=True)
 
@@ -1842,14 +2008,17 @@ async def leaderboard(ctx: discord.ApplicationContext):
         embed.description = "No one has earned any points yet."
     else:
         leaderboard_text = ""
+        member_fetches = [ctx.guild.fetch_member(entry['discord_id']) for entry in leaders]
+        members = await asyncio.gather(*member_fetches, return_exceptions=True)
+
         for i, entry in enumerate(leaders):
             user_id, points = entry['discord_id'], entry['points']
-            rank_emoji = {1: "\n\n", 2: "\n\n", 3: "\n\n"}.get(i + 1, f"`{i + 1}.`")
-            try:
-                member = await ctx.guild.fetch_member(user_id)
-                leaderboard_text += f"{rank_emoji} **{member.display_name}**: {points:,} points\n"
-            except discord.NotFound:
-                continue
+            rank_emoji = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
+            member_result = members[i]
+            if isinstance(member_result, discord.Member):
+                leaderboard_text += f"{rank_emoji} **{member_result.display_name}**: {points:,} points\n"
+            else: # User not found in guild
+                leaderboard_text += f"{rank_emoji} *Unknown User (ID: {user_id})*: {points:,} points\n"
         embed.description = leaderboard_text
     await ctx.respond(embed=embed)
 
@@ -1860,13 +2029,11 @@ osrs = bot.create_group("osrs", "Commands for Old School RuneScape integration."
 async def link_osrs_name(ctx: discord.ApplicationContext, osrs_name: discord.Option(str, "Your Old School RuneScape username.")):
     await ctx.defer(ephemeral=True)
     
-    # Basic validation for OSRS name (can be more robust with API call)
     if not re.match(r"^[a-zA-Z0-9\s-]{1,12}$", osrs_name):
         return await ctx.respond("Invalid OSRS username format. Names are 1-12 characters, alphanumeric, spaces, or hyphens.", ephemeral=True)
 
     async with bot.db_pool.acquire() as conn:
         try:
-            # Use ON CONFLICT to update if already exists
             await conn.execute("INSERT INTO user_links (discord_id, osrs_name) VALUES ($1, $2) ON CONFLICT (discord_id) DO UPDATE SET osrs_name = EXCLUDED.osrs_name",
                            ctx.author.id, osrs_name)
             await ctx.respond(f"Your Discord account has been linked to OSRS name: **{osrs_name}**.", ephemeral=True)
@@ -1874,14 +2041,11 @@ async def link_osrs_name(ctx: discord.ApplicationContext, osrs_name: discord.Opt
             print(f"Error linking OSRS name: {e}")
             await ctx.respond("An error occurred while linking your OSRS name.", ephemeral=True)
 
-# Modify the existing view_osrs_profile command to include AI summary
-
 @osrs.command(name="profile", description="View your (or another member's) OSRS stats from the Hiscores.")
 async def view_osrs_profile(ctx: discord.ApplicationContext, member: discord.Option(discord.Member, "The member to view. Defaults to yourself.", required=False)):
     await ctx.defer()
     target_member = member or ctx.author
     
-    # Using the new asyncpg connection pool
     async with bot.db_pool.acquire() as conn:
         osrs_name_data = await conn.fetchrow("SELECT osrs_name FROM user_links WHERE discord_id = $1", target_member.id)
 
@@ -1897,100 +2061,73 @@ async def view_osrs_profile(ctx: discord.ApplicationContext, member: discord.Opt
 
     async with aiohttp.ClientSession(headers=headers) as session:
         try:
-            async with session.get(hiscores_url) as response:
-                if response.status == 200:
-                    data = await response.text()
-                    lines = data.strip().split('\n')
+            # Fetch hiscores and generate AI prompt concurrently
+            hiscores_fetch_task = session.get(hiscores_url)
+            
+            hiscores_response, hiscores_error = await hiscores_fetch_task.wait_for_successful_response(timeout=15, raise_for_status=False)
 
-                    skills_data = {}
-                    for i, skill_name in enumerate(WOM_SKILLS): # WOM_SKILLS has 23 skills
-                        if i < len(lines): # Ensure line exists
-                            parts = lines[i].split(',')
-                            if len(parts) >= 3: # Rank, Level, XP
-                                skills_data[skill_name] = {
-                                    "rank": int(parts[0]),
-                                    "level": int(parts[1]),
-                                    "xp": int(parts[2])
-                                }
-                    
-                    embed = discord.Embed(
-                        title=f"\n\n OSRS Profile: {osrs_name}",
-                        url=f"https://secure.runescape.com/m=hiscore_oldschool/hiscorepersonal?user1={up.quote(osrs_name)}", 
-                        color=discord.Color.blue()
-                    )
-                    embed.set_thumbnail(url="https://oldschool.runescape.wiki/images/thumb/Old_School_RuneScape_logo.png/1200px-Old_School_RuneScape_logo.png")
-                    
-                    # Prepare data for AI summary
-                    overall_level = skills_data.get('overall', {}).get('level', 'N/A')
-                    top_skills_list = []
-                    if skills_data:
-                        # Sort skills by level, excluding 'overall'
-                        sorted_skills = sorted([ 
-                            (skill, data['level']) for skill, data in skills_data.items() if skill != 'overall' 
-                        ], key=lambda x: x[1], reverse=True)[:3]
-                        top_skills_list = [f"{s.capitalize()} (Lv{l})" for s, l in sorted_skills]
+            if hiscores_response and hiscores_response.status == 200:
+                data = await hiscores_response.text()
+                lines = data.strip().split('\n')
 
-                    ai_profile_prompt = f"""
+                skills_data = {}
+                for i, skill_name in enumerate(WOM_SKILLS): 
+                    if i < len(lines): 
+                        parts = lines[i].split(',')
+                        if len(parts) >= 3: 
+                            skills_data[skill_name] = {
+                                "rank": int(parts[0]),
+                                "level": int(parts[1]),
+                                "xp": int(parts[2])
+                            }
+                
+                overall_level = skills_data.get('overall', {}).get('level', 'N/A')
+                top_skills_list = []
+                if skills_data:
+                    sorted_skills = sorted([ 
+                        (skill, data['level']) for skill, data in skills_data.items() if skill != 'overall' 
+                    ], key=lambda x: x[1], reverse=True)[:3]
+                    top_skills_list = [f"{s.capitalize()} (Lv{l})" for s, l in sorted_skills]
+
+                ai_profile_prompt_text = f"""
 You are a wise and observant OSRS character, providing a brief, engaging summary of a player's profile.
 Highlight their overall level and their top 3 skills. Keep it to 1-2 sentences. Do not use emojis or markdown.
 Player: {osrs_name}
 Overall Level: {overall_level}
 Top 3 Skills: {', '.join(top_skills_list) if top_skills_list else 'None yet'}
 """
+                
+                ai_summary_task = ai_model.generate_content_async(ai_profile_prompt_text)
+                ai_response = await ai_summary_task
+                profile_summary = ai_response.text
+
+                embed = discord.Embed(
+                    title=f"\n\n OSRS Profile: {osrs_name}",
+                    url=f"https://secure.runescape.com/m=hiscore_oldschool/hiscorepersonal?user1={up.quote(osrs_name)}", 
+                    color=discord.Color.blue()
+                )
+                embed.set_thumbnail(url="https://oldschool.runescape.wiki/images/thumb/Old_School_RuneScape_logo.png/1200px-Old_School_RuneScape_logo.png")
+                embed.description = profile_summary + "\n\n"
+
+                overall = skills_data.get('overall', {})
+                if overall:
+                    embed.add_field(name="Overall", value=f"Rank: {overall['rank']:,}\nLevel: {overall['level']}\nXP: {overall['xp']:,}", inline=False)
+                
+                combat_skills = ["attack", "strength", "defence", "ranged", "prayer", "magic", "hitpoints"]
+                for i, block in enumerate(format_skill_list(combat_skills, skills_data)):
+                    embed.add_field(name=f"Combat Skills{' part ' + str(i+1) if i else ''}", value=block, inline=True)
                     
-                    profile_summary = ""
-                    try:
-                        response = await ai_model.generate_content_async(ai_profile_prompt)
-                        profile_summary = response.text
-                    except Exception as e:
-                        print(f"Error generating AI profile summary for {osrs_name}: {e}")
-                        profile_summary = "The ancient scrolls whisper of a warrior whose legend is still being written."
-                    
-                    embed.description = profile_summary + "\n\n" # Add AI summary at the top of the embed
+                skilling_skills = ["cooking", "woodcutting", "fletching", "fishing", "firemaking", "crafting", "smithing", "mining", "herblore", "agility", "thieving", "slayer", "farming", "runecraft", "hunter", "construction"]
+                for i, block in enumerate(format_skill_list(skilling_skills, skills_data)):
+                    embed.add_field(name=f"Other Skills{' part ' + str(i+1) if i else ''}", value=block, inline=True)
+                
+                embed.set_footer(text=f"Data from OSRS Hiscores | Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+                await ctx.respond(embed=embed)
 
-                    overall = skills_data.get('overall', {})
-                    if overall:
-                        embed.add_field(name="Overall", value=f"Rank: {overall['rank']:,}\nLevel: {overall['level']}\nXP: {overall['xp']:,}", inline=False)
-                    combat_skills = ["attack", "strength", "defence", "ranged", "prayer", "magic", "hitpoints"]							
-combat_value = ""
-for skill in combat_skills:
-    s_data = skills_data.get(skill)
-    if s_data:
-        combat_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
-
-if combat_value:
-    embed.add_field(name="Combat Skills", value=combat_value, inline=True)
-                    
-                    skilling_skills = ["cooking", "woodcutting", "fletching", "fishing", "firemaking", "crafting", "smithing", "mining", "herblore", "agility", "thieving", "slayer", "farming", "runecraft", "hunter", "construction"]
-# Build combat_value
-combat_value = ""
-for skill in combat_skills:
-    s_data = skills_data.get(skill)
-    if s_data:
-        combat_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
-
-if combat_value:
-    embed.add_field(name="Combat Skills", value=combat_value, inline=True)
-
-
-# Build skilling_value
-skilling_value = ""
-for skill in skilling_skills:
-    s_data = skills_data.get(skill)
-    if s_data:
-        skilling_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
-
-if skilling_value: 
-    embed.add_field(name="Other Skills", value=skilling_value, inline=True)
-
-                    
-                    embed.set_footer(text=f"Data from OSRS Hiscores | Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
-                    await ctx.respond(embed=embed)
-
-                elif response.status == 404:
-                    await ctx.respond(f"OSRS name **{osrs_name}** not found on the Hiscores. Please check spelling or ensure it's a valid RSN.", ephemeral=True)
-                else:
-                    await ctx.respond(f"Error fetching Hiscores data for **{osrs_name}**. Status: {response.status}", ephemeral=True)
+            elif hiscores_response and hiscores_response.status == 404:
+                await ctx.respond(f"OSRS name **{osrs_name}** not found on the Hiscores. Please check spelling or ensure it's a valid RSN.", ephemeral=True)
+            else:
+                await ctx.respond(f"Error fetching Hiscores data for **{osrs_name}**. Status: {hiscores_response.status if hiscores_response else 'N/A'}. Error: {hiscores_error}", ephemeral=True)
 
         except aiohttp.ClientError as e:
             print(f"HTTP client error fetching Hiscores for {osrs_name}: {e}")
@@ -1999,14 +2136,11 @@ if skilling_value:
             print(f"Unexpected error in /osrs profile: {e}")
             await ctx.respond("An unexpected error occurred while processing Hiscores data.", ephemeral=True)
 
-# Add to the 'osrs' SlashCommandGroup (after /osrs profile)
-
 @osrs.command(name="kc", description="View your (or another member's) OSRS boss kill counts.")
 async def view_osrs_kc(ctx: discord.ApplicationContext, member: discord.Option(discord.Member, "The member to view. Defaults to yourself.", required=False)):
     await ctx.defer()
     target_member = member or ctx.author
     
-    # Using the new asyncpg connection pool
     async with bot.db_pool.acquire() as conn:
         osrs_name_data = await conn.fetchrow("SELECT osrs_name FROM user_links WHERE discord_id = $1", target_member.id)
 
@@ -2023,52 +2157,61 @@ async def view_osrs_kc(ctx: discord.ApplicationContext, member: discord.Option(d
     async with aiohttp.ClientSession(headers=headers) as session:
         try:
             async with session.get(hiscores_url) as response:
-                if response.status == 200:
-                    data = await response.text()
-                    lines = data.strip().split('\n')
+                response.raise_for_status()
+                data = await response.text()
+                lines = data.strip().split('\n')
 
-                    # Skills occupy the first 23 lines
-                    activities_data = {}
-                    start_index_for_activities = len(WOM_SKILLS) # Index 23 onwards
-                    
-                    for i, activity_name in enumerate(OSRS_ACTIVABLE_HISCORE_ORDER):
-                        line_index = start_index_for_activities + i
-                        if line_index < len(lines):
-                            parts = lines[line_index].split(',')
-                            if len(parts) >= 2: # Rank and Score/KC
-                                # Hiscores provides rank, and then killcount/score for activities
-                                activities_data[activity_name.lower()] = {
-                                    "rank": int(parts[0]),
-                                    "killcount": int(parts[1])
-                                }
+                activities_data = {}
+                start_index_for_activities = len(WOM_SKILLS) 
+                
+                for i, activity_name in enumerate(OSRS_ACTIVABLE_HISCORE_ORDER):
+                    line_index = start_index_for_activities + i
+                    if line_index < len(lines):
+                        parts = lines[line_index].split(',')
+                        if len(parts) >= 2: 
+                            activities_data[activity_name.lower()] = {
+                                "rank": int(parts[0]),
+                                "killcount": int(parts[1])
+                            }
 
-                    embed = discord.Embed(
-                        title=f"\n\n OSRS Kill Counts: {osrs_name}",
-                        url=f"https://secure.runescape.com/m=hiscore_oldschool/hiscorepersonal?user1={up.quote(osrs_name)}", 
-                        color=discord.Color.dark_red()
-                    )
-                    embed.set_thumbnail(url="https://oldschool.runescape.wiki/images/Slayer_helmet.png") 
+                embed = discord.Embed(
+                    title=f"\n\n OSRS Kill Counts: {osrs_name}",
+                    url=f"https://secure.runescape.com/m=hiscore_oldschool/hiscorepersonal?user1={up.quote(osrs_name)}", 
+                    color=discord.Color.dark_red()
+                )
+                embed.set_thumbnail(url="https://oldschool.runescape.wiki/images/Slayer_helmet.png") 
 
-                    kc_text = ""
-                    # Prioritize displaying common PvM bosses
-                    notable_bosses = ["Vorkath", "Zulrah", "Cerberus", "Chambers of Xeric", "Theatre of Blood", "Tombs of Amascut", "General Graardor", "K'ril Tsutsaroth", "Kree'arra", "Commander Zilyana", "Nex", "Phosani's Nightmare", "Nightmare"]
+                kc_lines = []
+                notable_bosses = ["Vorkath", "Zulrah", "Cerberus", "Chambers of Xeric", "Theatre of Blood", "Tombs of Amascut", "General Graardor", "K'ril Tsutsaroth", "Kree'arra", "Commander Zilyana", "Nex", "Phosani's Nightmare", "Nightmare"]
 
-                    for boss in notable_bosses:
-                        kc_entry = activities_data.get(boss.lower())
-                        if kc_entry and kc_entry['killcount'] > 0:
-                            kc_text += f"**{boss}**: {kc_entry['killcount']:,} (Rank: {kc_entry['rank']:,})\n"
-                    
-                    if not kc_text:
-                        kc_text = "No notable boss kill counts found. Keep grinding!"
-                    
-                    embed.add_field(name="PvM Kill Counts", value=kc_text, inline=False)
-                    embed.set_footer(text=f"Data from OSRS Hiscores | Requested by {ctx.author.display_name}")
-                    await ctx.respond(embed=embed)
-
-                elif response.status == 404:
-                    await ctx.respond(f"OSRS name **{osrs_name}** not found on the Hiscores. Please check spelling or ensure it's a valid RSN.", ephemeral=True)
+                for boss in notable_bosses:
+                    kc_entry = activities_data.get(boss.lower())
+                    if kc_entry and kc_entry['killcount'] > 0:
+                        kc_lines.append(f"**{boss}**: {kc_entry['killcount']:,} (Rank: {kc_entry['rank']:,})")
+                
+                if not kc_lines:
+                    kc_text = "No notable boss kill counts found. Keep grinding!"
                 else:
-                    await ctx.respond(f"Error fetching Hiscores data for **{osrs_name}**. Status: {response.status}", ephemeral=True)
+                    # Format into blocks if too long
+                    blocks, current_block = [], ""
+                    for line in kc_lines:
+                        if len(current_block) + len(line) + 1 > MAX_FIELD_LENGTH:
+                            blocks.append(current_block)
+                            current_block = line + "\n"
+                        else:
+                            current_block += line + "\n"
+                    if current_block: blocks.append(current_block)
+
+                    for idx, block in enumerate(blocks):
+                        embed.add_field(name=f"PvM Kill Counts{' (part ' + str(idx+1) + ')' if len(blocks) > 1 else ''}", value=block, inline=False)
+
+                embed.set_footer(text=f"Data from OSRS Hiscores | Requested by {ctx.author.display_name}")
+                await ctx.respond(embed=embed)
+
+            elif response.status == 404:
+                await ctx.respond(f"OSRS name **{osrs_name}** not found on the Hiscores. Please check spelling or ensure it's a valid RSN.", ephemeral=True)
+            else:
+                await ctx.respond(f"Error fetching Hiscores data for **{osrs_name}**. Status: {response.status}", ephemeral=True)
 
         except aiohttp.ClientError as e:
             print(f"HTTP client error fetching Hiscores for {osrs_name}: {e}")
@@ -2090,7 +2233,6 @@ async def schedule_pvm_event(ctx: discord.ApplicationContext,
     await ctx.defer(ephemeral=True)
     
     try:
-        # Attempt to parse start_time, e.g., 'YYYY-MM-DD HH:MM UTC'
         event_start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M UTC').replace(tzinfo=timezone.utc)
     except ValueError:
         return await ctx.respond("Invalid start time format. Please use 'YYYY-MM-DD HH:MM UTC'.", ephemeral=True)
@@ -2111,17 +2253,14 @@ async def schedule_pvm_event(ctx: discord.ApplicationContext,
             event_embed.add_field(name="Expected Duration", value=f"{duration_minutes} minutes", inline=False)
             event_embed.set_footer(text=f"Event organized by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
 
-            # Send a placeholder message first to get message_id for the view
             event_message = await pvm_channel.send(embed=event_embed)
             
             event_id = await conn.fetchval("INSERT INTO pvm_events (title, description, starts_at, duration_minutes, message_id, channel_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
                                    title, description, event_start_dt, duration_minutes, event_message.id, pvm_channel.id)
 
-            # Create and attach the view
             signup_view = PvmEventView(event_id=event_id)
             await event_message.edit(view=signup_view)
 
-            # Store the signup message ID (which is the main event message ID here)
             await conn.execute("UPDATE pvm_events SET signup_message_id = $1 WHERE id = $2", event_message.id, event_id)
 
             await ctx.respond(f"PVM event '{title}' scheduled successfully! (ID: {event_id})", ephemeral=True)
@@ -2153,16 +2292,29 @@ async def view_pvm_participants(ctx: discord.ApplicationContext, event_id: disco
         embed.add_field(name="No Sign-ups Yet", value="Be the first to join this epic adventure!")
     else:
         participant_list = []
-        for entry in signups:
-            try:
-                member = await ctx.guild.fetch_member(entry['user_id'])
-                if member: participant_list.append(member.display_name)
-                else: participant_list.append(f"*Unknown User (ID: {entry['user_id']})*")
-            except discord.NotFound:
-                participant_list.append(f"*User Left (ID: {entry['user_id']})*")
+        member_fetches = [ctx.guild.fetch_member(entry['user_id']) for entry in signups]
+        members = await asyncio.gather(*member_fetches, return_exceptions=True)
+
+        for i, entry in enumerate(signups):
+            member_result = members[i]
+            if isinstance(member_result, discord.Member):
+                participant_list.append(member_result.display_name)
+            else:
+                participant_list.append(f"*Unknown User (ID: {entry['user_id']})*")
         
-        participants_text = textwrap.fill(', '.join(participant_list), width=500)
-        embed.add_field(name="Signed-Up Warriors", value=participants_text, inline=False)
+        # Use format_skill_list logic to split if too long
+        blocks, current_block = [], ""
+        for participant_name in participant_list:
+            line = f"- {participant_name}\n"
+            if len(current_block) + len(line) > MAX_FIELD_LENGTH:
+                blocks.append(current_block)
+                current_block = line
+            else:
+                current_block += line
+        if current_block: blocks.append(current_block)
+
+        for idx, block in enumerate(blocks):
+            embed.add_field(name=f"Signed-Up Warriors{' (part ' + str(idx+1) + ')' if len(blocks) > 1 else ''}", value=block, inline=False)
     
     embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
     await ctx.respond(embed=embed)
@@ -2180,7 +2332,6 @@ async def cancel_pvm_event(ctx: discord.ApplicationContext, event_id: discord.Op
             
             title, message_id, channel_id = event_data['title'], event_data['message_id'], event_data['channel_id']
 
-            # Deactivate the event (CASCADE will handle signups)
             await conn.execute("UPDATE pvm_events SET is_active = FALSE WHERE id = $1", event_id)
 
             event_channel = bot.get_channel(channel_id)
@@ -2189,7 +2340,7 @@ async def cancel_pvm_event(ctx: discord.ApplicationContext, event_id: discord.Op
                     original_message = await event_channel.fetch_message(message_id)
                     await original_message.edit(content=f"**PVM Event '{title}' (ID: {event_id}) has been CANCELLED!**", embed=None, view=None)
                 except discord.NotFound:
-                    pass # Message already deleted
+                    pass 
                 await event_channel.send(f"The PVM event **{title}** (ID: {event_id}) has been cancelled by an admin.")
 
             await ctx.respond(f"PVM event '{title}' (ID: {event_id}) successfully cancelled.", ephemeral=True)
@@ -2215,7 +2366,6 @@ async def log_pb(ctx: discord.ApplicationContext,
     
     async with bot.db_pool.acquire() as conn:
         try:
-            # Check if existing PB is better
             existing_pb = await conn.fetchrow("SELECT pb_time_ms FROM boss_pbs WHERE discord_id = $1 AND boss_name ILIKE $2", ctx.author.id, boss_name)
 
             if existing_pb and pb_time_ms >= existing_pb['pb_time_ms']:
@@ -2262,14 +2412,17 @@ async def clan_pb(ctx: discord.ApplicationContext, boss_name: discord.Option(str
         embed.description = f"No Personal Bests logged for **{boss_name.title()}** yet."
     else:
         leaderboard_text = ""
+        member_fetches = [ctx.guild.fetch_member(entry['discord_id']) for entry in leaderboard_data]
+        members = await asyncio.gather(*member_fetches, return_exceptions=True)
+
         for i, entry in enumerate(leaderboard_data):
-            rank_emoji = {1: "\n\n", 2: "\n\n", 3: "\n\n"}.get(i + 1, f"`{i + 1}.`")
-            try:
-                member = await ctx.guild.fetch_member(entry['discord_id'])
-                if member:
-                    leaderboard_text += f"{rank_emoji} **{member.display_name}**: {entry['pb_time_ms']/1000:.2f}s\n"
-            except discord.NotFound:
-                leaderboard_text += f"{rank_emoji} *User Left (ID: {entry['discord_id']})*: {entry['pb_time_ms']/1000:.2f}s\n"
+            user_id, pb_time_ms = entry['discord_id'], entry['pb_time_ms']
+            rank_emoji = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i + 1, f"`{i + 1}.`")
+            member_result = members[i]
+            if isinstance(member_result, discord.Member):
+                leaderboard_text += f"{rank_emoji} **{member_result.display_name}**: {pb_time_ms/1000:.2f}s\n"
+            else:
+                leaderboard_text += f"{rank_emoji} *User Left (ID: {user_id})*: {pb_time_ms/1000:.2f}s\n"
         embed.description = leaderboard_text
     
     embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
@@ -2331,7 +2484,22 @@ async def help(ctx: discord.ApplicationContext):
     embed.set_footer(text="Let the games begin!")
     await ctx.respond(embed=embed, ephemeral=True)
 
-# --- Main Execution Block ---
+# Extend aiohttp.ClientResponse to add a utility method for awaiting successful responses
+async def _wait_for_successful_response(self, timeout=None, raise_for_status=True):
+    """Waits for the response to complete and raises for status or returns the response."""
+    try:
+        await self.read()
+        if raise_for_status: self.raise_for_status()
+        return self, None
+    except asyncio.TimeoutError:
+        return None, "Request timed out."
+    except aiohttp.ClientError as e:
+        return self, f"Client error: {e}. Status: {self.status}"
+    except Exception as e:
+        return self, f"Unexpected error: {e}"
+
+aiohttp.ClientResponse.wait_for_successful_response = _wait_for_successful_response
+
 async def run_bot():
     """A resilient function to start the bot and handle rate limits."""
     while True:
