@@ -1957,7 +1957,8 @@ Top 3 Skills: {', '.join(top_skills_list) if top_skills_list else 'None yet'}
                     for skill in combat_skills:
                         s_data = skills_data.get(skill)
                         if s_data:
-                            combat_value += f"**{skill.capitalize()}**": {s_data['level']}\n"
+                            combat_value += f"**{skill.capitalize()}**: {s_data['level']}\n"
+
                     if combat_value: 
                         embed.add_field(name="Combat Skills", value=combat_value, inline=True)
                     
