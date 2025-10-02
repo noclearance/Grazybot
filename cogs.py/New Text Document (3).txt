@@ -1,0 +1,14 @@
+import google.generativeai as genai
+
+class AIModelManager:
+    def __init__(self):
+        self.ai_model = None
+
+    async def setup_ai(self, config):
+        genai.configure(api_key=config["GEMINI_API_KEY"])
+        self.ai_model = genai.GenerativeModel('gemini-1.0-pro')
+
+    def get_model(self):
+        return self.ai_model
+
+ai_manager = AIModelManager()

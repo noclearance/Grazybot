@@ -30,7 +30,7 @@ DEBUG_GUILD_ID = int(os.getenv('DEBUG_GUILD_ID'))
 DATABASE_URL = os.getenv('DATABASE_URL')
 TASKS_FILE = "tasks.json"
 SOTW_ROLE_ID = int(os.getenv('SOTW_ROLE_ID'))
-MAX_FIELD_LENGTH = 1024
+
 
 
 # Channel IDs
