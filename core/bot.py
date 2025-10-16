@@ -1,83 +1,68 @@
 # core/bot.py
-# Defines a custom Bot class to hold application state.
+# The main entry point for starting the GrazyBot.
 
-import discord
-from discord.ext import commands
-import asyncpg
+import asyncio
 import logging
-import os
-from utils.views import GiveawayView, PvmEventView, SubmissionView
+import discord
+import sys
 
 from . import config
+from .bot_base import GrazyBot
+from .database import create_db_pool
 
-logger = logging.getLogger(__name__)
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logging.getLogger('discord').setLevel(logging.WARNING)
+logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-class GrazyBot(commands.Bot):
-    """
-    A custom bot subclass to hold shared state like the database pool.
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+logger = logging.getLogger("main")
 
-        # --- Application State ---
-        self.db_pool: asyncpg.Pool | None = None
-        self.item_mapping: dict[str, dict] = {}
-        self.active_polls: dict[int, int] = {} # mapping of message_id to poll_id
+async def main():
+    """The main function to initialize and run the bot."""
 
-    async def setup_hook(self):
-        """
-        The setup_hook is called after the bot logs in but before it connects
-        to the websocket. This is the ideal place to load cogs and extensions.
-        """
-        logger.info("Running setup_hook...")
+    try:
+        config.validate_config()
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        sys.exit(1)
 
-        # --- Load Cogs ---
-        # A simple implementation to load all cogs from the 'cogs' directory.
-        # This can be expanded with unload/reload commands.
-        # A simple implementation to load all cogs from the 'cogs' directory.
-        cogs_dir = "cogs"
-        for filename in os.listdir(cogs_dir):
-            if filename.endswith(".py") and not filename.startswith("__"):
-                try:
-                    await self.load_extension(f"{cogs_dir}.{filename[:-3]}")
-                    logger.info(f"Successfully loaded extension: {filename}")
-                except Exception as e:
-                    logger.error(f"Failed to load extension {filename}: {e}", exc_info=True)
+    # --- Bot Intents ---
+    intents = discord.Intents.default()
+    intents.members = True
+    intents.message_content = True
 
-        # --- Re-register Persistent Views ---
-        # This is critical for buttons to work after a bot restart.
-        if self.db_pool:
-            async with self.db_pool.acquire() as conn:
-                active_giveaways = await conn.fetch("SELECT message_id, prize FROM giveaways WHERE is_active = TRUE")
-                for gw in active_giveaways:
-                    self.add_view(GiveawayView(message_id=gw['message_id'], prize=gw['prize']))
-                logger.info(f"Re-registered {len(active_giveaways)} active giveaway view(s).")
+    # --- Initialize Bot ---
+    bot = GrazyBot(
+        command_prefix=config.BOT_PREFIX,
+        intents=intents,
+        help_command=None
+    )
 
-                active_pvm_events = await conn.fetch("SELECT id FROM pvm_events WHERE is_active = TRUE")
-                for pvm in active_pvm_events:
-                    self.add_view(PvmEventView(event_id=pvm['id']))
-                logger.info(f"Re-registered {len(active_pvm_events)} active PVM event view(s).")
+    # --- Database Connection ---
+    db_pool = await create_db_pool()
+    if not db_pool:
+        logger.critical("Database connection failed. The bot cannot start.")
+        sys.exit(1)
+    bot.db_pool = db_pool
 
-                # SubmissionView is generic and doesn't need specific data to be re-registered
-                self.add_view(SubmissionView())
-                logger.info("Re-registered generic SubmissionView.")
+    # --- Start Bot ---
+    try:
+        await bot.start(config.TOKEN)
+    except discord.LoginFailure:
+        logger.critical("Failed to log in. Please check your bot token.")
+        sys.exit(1)
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred while running the bot: {e}")
+    finally:
+        if not bot.is_closed():
+            await bot.close()
 
-        # --- Sync Slash Commands ---
-        if config.DEBUG_GUILD_ID:
-            guild = discord.Object(id=config.DEBUG_GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            logger.info(f"Commands synced to debug guild: {config.DEBUG_GUILD_ID}")
-
-    async def on_ready(self):
-        logger.info(f'Logged in as {self.user.name} (ID: {self.user.id})')
-        logger.info(f"Connected to {len(self.guilds)} guilds.")
-        logger.info('Bot is ready and online.')
-
-    async def close(self):
-        """Ensure the database connection is closed gracefully."""
-        logger.info("Closing bot...")
-        if self.db_pool:
-            await self.db_pool.close()
-            logger.info("Database connection pool closed.")
-        await super().close()
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot shut down by user.")

@@ -5,7 +5,7 @@ import discord
 import logging
 from . import ai
 from core import config
-from core.bot import GrazyBot
+from core.bot_base import GrazyBot
 
 logger = logging.getLogger(__name__)
 
