@@ -3,7 +3,7 @@
 
 import discord
 from discord.ext import commands
-from discord.commands import SlashCommandGroup
+from discord import SlashCommandGroup
 import logging
 
 from core.bot import GrazyBot

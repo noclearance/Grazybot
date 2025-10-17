@@ -2,7 +2,7 @@
 # Contains commands for managing giveaways.
 
 import discord
-from discord.commands import SlashCommandGroup, Option
+from discord import SlashCommandGroup, Option
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 import logging

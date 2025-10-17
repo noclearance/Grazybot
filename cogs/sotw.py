@@ -4,7 +4,7 @@
 import discord
 import random
 import logging
-from discord.commands import SlashCommandGroup, Option
+from discord import SlashCommandGroup, Option
 from discord.ext import commands
 from datetime import datetime
 

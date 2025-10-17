@@ -2,11 +2,10 @@
 # Contains administrative commands for managing the bot and server.
 
 import discord
-from discord import SlashCommandGroup
 from discord.ext import commands
 import logging
 
-from core.bot import GrazyBot
+from core.bot_base import GrazyBot
 from utils import clan, wom
 
 logger = logging.getLogger(__name__)
@@ -17,7 +16,8 @@ class Admin(commands.Cog):
     def __init__(self, bot: GrazyBot):
         self.bot = bot
 
-    admin_group = SlashCommandGroup(
+    # Create a slash command group using decorators, which is the standard for py-cord
+    admin_group = discord.SlashCommandGroup(
         "admin",
         "Admin-only commands for managing the bot and server.",
         default_member_permissions=discord.Permissions(manage_guild=True)
@@ -63,9 +63,7 @@ class Admin(commands.Cog):
         else: # remove
             try:
                 async with self.bot.db_pool.acquire() as conn:
-                    # Ensure the user exists before trying to subtract points
                     await conn.execute("INSERT INTO clan_points (discord_id, points) VALUES ($1, 0) ON CONFLICT (discord_id) DO NOTHING", member.id)
-                    # Use GREATEST to prevent points from going below zero
                     await conn.execute("UPDATE clan_points SET points = GREATEST(0, points - $1) WHERE discord_id = $2", amount, member.id)
                 logger.info(f"Admin {ctx.author} removed {amount} points from {member.display_name} for: {reason}")
             except Exception as e:
@@ -88,7 +86,7 @@ class Admin(commands.Cog):
             return await ctx.respond(f"Could not fetch WOM details for competition ID {competition_id}. Error: {error}", ephemeral=True)
 
         awarded_to = []
-        point_values = [100, 50, 25] # Points for 1st, 2nd, 3rd
+        point_values = [100, 50, 25]
         
         async with self.bot.db_pool.acquire() as conn:
             participants = comp_data.get('participations', [])
@@ -113,5 +111,4 @@ class Admin(commands.Cog):
         logger.info(f"Admin {ctx.author} awarded SOTW points for competition {competition_id}.")
 
 async def setup(bot: GrazyBot):
-    """Standard setup function to add the cog to the bot."""
-    await bot.add_cog(Admin(bot))
+    bot.add_cog(Admin(bot))

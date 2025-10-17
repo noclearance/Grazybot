@@ -2,7 +2,7 @@
 # Command to view all active clan events.
 
 import discord
-from discord.commands import SlashCommandGroup
+from discord import SlashCommandGroup
 from discord.ext import commands
 import asyncio
 import logging
