@@ -61,10 +61,17 @@ class GrazyBot(commands.Bot):
 
         # --- Sync Slash Commands ---
         if config.DEBUG_GUILD_ID:
+            # If a debug guild is specified, sync commands there immediately.
+            # This is ideal for testing.
             guild = discord.Object(id=config.DEBUG_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
             logger.info(f"Commands synced to debug guild: {config.DEBUG_GUILD_ID}")
+        else:
+            # If no debug guild is set, sync globally.
+            # This can take up to an hour to propagate to all servers.
+            await self.tree.sync()
+            logger.info("No debug guild set. Commands synced globally. This may take up to an hour to reflect in Discord.")
 
     async def on_ready(self):
         logger.info(f'Logged in as {self.user.name} (ID: {self.user.id})')
