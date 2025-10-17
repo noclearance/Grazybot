@@ -1,0 +1,12 @@
+# Discord Bot
+discord.py
+python-dotenv
+
+# Web and APIs
+aiohttp
+asyncpg
+google-generativeai
+
+# Utilities
+Pillow
+pytest

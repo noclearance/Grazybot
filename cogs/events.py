@@ -1,65 +1,81 @@
-# bot/cogs/events.py
+# cogs/events.py
 # Command to view all active clan events.
 
 import discord
-from discord.commands import SlashCommandGroup
+from discord import SlashCommandGroup
 from discord.ext import commands
 import asyncio
+import logging
+
+from core.bot import GrazyBot
+
+logger = logging.getLogger(__name__)
 
 class Events(commands.Cog):
     """Cog for viewing active events."""
     
-    def __init__(self, bot):
+    def __init__(self, bot: GrazyBot):
         self.bot = bot
 
-    events = SlashCommandGroup("events", "View all active clan events.")
+    events_group = SlashCommandGroup("events", "View all active clan events.")
 
-    @events.command(name="view", description="Shows all currently active competitions and raffles.")
+    @events_group.command(name="view", description="Shows all currently active competitions and events.")
     async def view_events(self, ctx: discord.ApplicationContext):
+        """Fetches and displays all active events in an embed."""
         await ctx.defer()
-        async with self.bot.db_pool.acquire() as conn:
-            # Fetch all event data concurrently for efficiency
-            comp_task = conn.fetchrow("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
-            raf_task = conn.fetchrow("SELECT * FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
-            giveaway_task = conn.fetchrow("SELECT * FROM giveaways WHERE is_active = TRUE AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
-            pvm_event_task = conn.fetchrow("SELECT * FROM pvm_events WHERE is_active = TRUE AND starts_at > NOW() ORDER BY starts_at ASC LIMIT 1")
+
+        try:
+            async with self.bot.db_pool.acquire() as conn:
+                # Fetch all event data concurrently for efficiency
+                comp_task = conn.fetchrow("SELECT * FROM active_competitions WHERE ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
+                raf_task = conn.fetchrow("SELECT * FROM raffles WHERE winner_id IS NULL AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
+                giveaway_task = conn.fetchrow("SELECT * FROM giveaways WHERE is_active = TRUE AND ends_at > NOW() ORDER BY ends_at DESC LIMIT 1")
+                pvm_event_task = conn.fetchrow("SELECT * FROM pvm_events WHERE is_active = TRUE AND starts_at > NOW() ORDER BY starts_at ASC LIMIT 1")
+
+                comp, raf, giveaway, pvm_event = await asyncio.gather(comp_task, raf_task, giveaway_task, pvm_event_task)
+
+            embed = discord.Embed(
+                title="🌟 Clan Event Status 🌟",
+                description="Here's a look at all the events currently running.",
+                color=discord.Color.dark_purple()
+            )
+
+            # SOTW
+            if comp:
+                embed.add_field(name="⚔️ Skill of the Week", value=f"**Competition:** [{comp['title']}](https://wiseoldman.net/competitions/{comp['id']})\n**Ends:** <t:{int(comp['ends_at'].timestamp())}:R>", inline=False)
+            else:
+                embed.add_field(name="⚔️ Skill of the Week", value="No SOTW competition is running.", inline=False)
             
-            comp, raf, giveaway, pvm_event = await asyncio.gather(comp_task, raf_task, giveaway_task, pvm_event_task)
+            # Raffle
+            if raf:
+                raffle_channel = self.bot.get_channel(raf['channel_id'])
+                url = raffle_channel.get_partial_message(raf['message_id']).jump_url if raffle_channel else '#'
+                embed.add_field(name="🎟️ Active Raffle", value=f"**Prize:** {raf['prize']}\n**Ends:** <t:{int(raf['ends_at'].timestamp())}:R>\n[View Raffle]({url})", inline=False)
+            else:
+                embed.add_field(name="🎟️ Active Raffle", value="No raffle is running.", inline=False)
 
-        embed = discord.Embed(title="Clan Event Status", description="Here's a look at all the events currently running.", color=discord.Color.blurple())
-        
-        # SOTW
-        if comp:
-            embed.add_field(name="Active Competition", value=f"**Title:** [{comp['title']}](https://wiseoldman.net/competitions/{comp['id']})\n**Ends:** <t:{int(comp['ends_at'].timestamp())}:R>", inline=False)
-        else:
-            embed.add_field(name="Active Competition", value="No SOTW competition is running.", inline=False)
-        
-        # Raffle
-        if raf:
-            raffle_channel = self.bot.get_channel(raf['channel_id'])
-            url = raffle_channel.get_partial_message(raf['message_id']).jump_url if raffle_channel else '#'
-            embed.add_field(name="Active Raffle", value=f"**Prize:** {raf['prize']}\n**Ends:** <t:{int(raf['ends_at'].timestamp())}:R>\n[View Raffle]({url})", inline=False)
-        else:
-            embed.add_field(name="Active Raffle", value="No raffle is running.", inline=False)
+            # Giveaway
+            if giveaway:
+                gw_channel = self.bot.get_channel(giveaway['channel_id'])
+                url = gw_channel.get_partial_message(giveaway['message_id']).jump_url if gw_channel else '#'
+                embed.add_field(name="🎉 Active Giveaway", value=f"**Prize:** {giveaway['prize']}\n**Ends:** <t:{int(giveaway['ends_at'].timestamp())}:R>\n[Enter Here]({url})", inline=False)
+            else:
+                embed.add_field(name="🎉 Active Giveaway", value="No active giveaways.", inline=False)
 
-        # Giveaway
-        if giveaway:
-            gw_channel = self.bot.get_channel(giveaway['channel_id'])
-            url = gw_channel.get_partial_message(giveaway['message_id']).jump_url if gw_channel else '#'
-            embed.add_field(name="Active Giveaway", value=f"**Prize:** {giveaway['prize']}\n**Ends:** <t:{int(giveaway['ends_at'].timestamp())}:R>\n[Enter Here]({url})", inline=False)
-        else:
-            embed.add_field(name="Active Giveaway", value="No active giveaways.", inline=False)
-        
-        # PVM Event
-        if pvm_event:
-            pvm_channel = self.bot.get_channel(pvm_event['channel_id'])
-            url = pvm_channel.get_partial_message(pvm_event['message_id']).jump_url if pvm_channel else '#'
-            embed.add_field(name="Upcoming PVM Event", value=f"**Event:** {pvm_event['title']}\n**Starts:** <t:{int(pvm_event['starts_at'].timestamp())}:R>\n[View Event]({url})", inline=False)
-        else:
-            embed.add_field(name="Upcoming PVM Event", value="No PVM events scheduled.", inline=False)
+            # PVM Event
+            if pvm_event:
+                pvm_channel = self.bot.get_channel(pvm_event['channel_id'])
+                url = pvm_channel.get_partial_message(pvm_event['message_id']).jump_url if pvm_channel else '#'
+                embed.add_field(name="🐉 Upcoming PVM Event", value=f"**Event:** {pvm_event['title']}\n**Starts:** <t:{int(pvm_event['starts_at'].timestamp())}:R>\n[View Event]({url})", inline=False)
+            else:
+                embed.add_field(name="🐉 Upcoming PVM Event", value="No PVM events scheduled.", inline=False)
 
-        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
-        await ctx.respond(embed=embed)
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+            await ctx.respond(embed=embed)
 
-def setup(bot):
-    bot.add_cog(Events(bot))
+        except Exception as e:
+            logger.error(f"Error fetching active events: {e}", exc_info=True)
+            await ctx.respond("An error occurred while fetching the events. Please try again later.", ephemeral=True)
+
+async def setup(bot: GrazyBot):
+    await bot.add_cog(Events(bot))
