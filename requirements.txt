@@ -1,5 +1,5 @@
 # Discord Bot
-discord.py
+py-cord
 python-dotenv
 
 # Web and APIs
