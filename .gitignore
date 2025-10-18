@@ -5,7 +5,11 @@ venv/
 .env
 
 # Ignore the database file
-events.db
+*.db
 
 # Ignore generated images
 *.png
+
+# Ignore Python cache files
+__pycache__/
+*.pyc

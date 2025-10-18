@@ -1,26 +1,30 @@
-# core/database.py
-# Manages the database connection pool.
-
 import asyncpg
+import os
+from dotenv import load_dotenv
 import logging
-from . import config
 
 logger = logging.getLogger(__name__)
 
 async def create_db_pool():
-    """
-    Creates and returns a connection pool to the PostgreSQL database.
-    Returns None if the connection fails.
-    """
+    load_dotenv()
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        logging.error("DATABASE_URL not set in environment variables")
+        raise ValueError("DATABASE_URL not set")
     try:
-        pool = await asyncpg.create_pool(
-            dsn=config.DATABASE_URL,
-            min_size=5,
-            max_size=20,
-            command_timeout=60
-        )
-        logger.info("Database connection pool created successfully.")
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=10)
+        logging.info("Database connection pool created successfully")
+
+        # Apply schema
+        async with pool.acquire() as conn:
+            with open('schema.sql', 'r') as f:
+                await conn.execute(f.read())
+        logging.info("Database schema applied successfully.")
+
         return pool
     except (asyncpg.PostgresError, OSError) as e:
-        logger.error(f"Failed to create database connection pool: {e}")
-        return None
+        logging.error(f"Failed to create database connection pool: {e}")
+        raise
+    except FileNotFoundError:
+        logging.error("schema.sql not found. Cannot apply database schema.")
+        raise

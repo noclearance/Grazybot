@@ -1,11 +1,14 @@
 # cogs/ge.py
 # Contains commands related to the Grand Exchange.
 
+# cogs/ge.py
+# Contains commands related to the Grand Exchange.
+
 import discord
 import aiohttp
 import re
 import logging
-from discord import SlashCommandGroup, Option
+from discord import app_commands
 from discord.ext import commands
 
 from core.bot import GrazyBot
@@ -25,35 +28,35 @@ class GrandExchange(commands.Cog):
         """Close the aiohttp session when the cog is unloaded."""
         self.bot.loop.create_task(self.session.close())
 
-    ge = SlashCommandGroup("ge", "Commands for the Grand Exchange.")
+    ge = app_commands.Group(name="ge", description="Commands for the Grand Exchange.")
 
-    async def item_autocomplete(self, ctx: discord.AutocompleteContext) -> list[str]:
+    async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Provides autocomplete suggestions for OSRS items."""
-        query = ctx.value.lower()
+        query = current.lower()
         if not self.bot.item_mapping:
-            return ["Item list is still loading, please wait..."]
+            return [app_commands.Choice(name="Item list is still loading, please wait...", value="...")]
         if not query:
-            return ["Twisted bow", "Scythe of vitur", "Abyssal whip", "Dragon claws"]
+            return [app_commands.Choice(name=name.title(), value=name) for name in ["twisted bow", "scythe of vitur", "abyssal whip", "dragon claws"]]
         
-        matches = [name.title() for name in self.bot.item_mapping.keys() if name.startswith(query)]
+        matches = [name for name in self.bot.item_mapping.keys() if name.startswith(query)]
         if len(matches) < 25:
             containing_matches = [
-                name.title() for name in self.bot.item_mapping.keys()
-                if query in name and name.title() not in matches
+                name for name in self.bot.item_mapping.keys()
+                if query in name and name not in matches
             ]
             matches.extend(containing_matches)
             
-        return matches[:25]
+        return [app_commands.Choice(name=name.title(), value=name) for name in matches[:25]]
 
     @ge.command(name="price", description="Check the Grand Exchange price of an item.")
-    async def price(self, ctx: discord.ApplicationContext, 
-                    item: Option(str, "The name of the item to check.", autocomplete=item_autocomplete)):
+    @app_commands.autocomplete(item=item_autocomplete)
+    async def price(self, interaction: discord.Interaction, item: str):
         """Fetches and displays the GE price for a specified item."""
-        await ctx.defer()
+        await interaction.response.defer()
         
         item_details = self.bot.item_mapping.get(item.lower())
         if not item_details:
-            return await ctx.respond("Could not find this item. Please choose one from the list.", ephemeral=True)
+            return await interaction.followup.send("Could not find this item. Please choose one from the list.", ephemeral=True)
             
         item_id = item_details['id']
         try:
@@ -75,19 +78,18 @@ class GrandExchange(commands.Cog):
                 embed.add_field(name="Last Sell", value=f"Updated {format_timestamp(price_data.get('lowTime'))}", inline=True)
 
                 embed.set_footer(text="Price data from osrs.cloud")
-                await ctx.respond(embed=embed)
+                await interaction.followup.send(embed=embed)
         except aiohttp.ClientError as e:
             logger.error(f"GE price check failed for item '{item}' (ID: {item_id}): {e}")
-            await ctx.respond(f"Error fetching price data. The API might be down.", ephemeral=True)
+            await interaction.followup.send(f"Error fetching price data. The API might be down.", ephemeral=True)
         except Exception as e:
             logger.error(f"Unexpected error in GE price check for '{item}': {e}", exc_info=True)
-            await ctx.respond("An unexpected error occurred. Please try again later.", ephemeral=True)
+            await interaction.followup.send("An unexpected error occurred. Please try again later.", ephemeral=True)
 
     @ge.command(name="value", description="Calculate the total GE value of multiple items.")
-    async def calculate_value(self, ctx: discord.ApplicationContext,
-        item_list: discord.Option(str, "A list of items and quantities (e.g., '10k raw sharks, 1 tbow').")):
+    async def calculate_value(self, interaction: discord.Interaction, item_list: str):
         """Parses a string of items and quantities, and calculates their total GE value."""
-        await ctx.defer()
+        await interaction.response.defer()
 
         total_value = 0
         valued_items = []
@@ -97,7 +99,7 @@ class GrandExchange(commands.Cog):
         matches = item_regex.findall(item_list.lower())
 
         if not matches:
-            return await ctx.respond("Invalid format. Please use a format like '10k raw sharks, 1 twisted bow'.", ephemeral=True)
+            return await interaction.followup.send("Invalid format. Please use a format like '10k raw sharks, 1 twisted bow'.", ephemeral=True)
 
         for quantity_str, item_name_raw in matches:
             item_name = item_name_raw.strip()
@@ -142,7 +144,7 @@ class GrandExchange(commands.Cog):
         if unmatched_items:
             embed.add_field(name="Unmatched / Failed Items", value="\n".join(unmatched_items), inline=False)
 
-        await ctx.respond(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: GrazyBot):

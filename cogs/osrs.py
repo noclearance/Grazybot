@@ -1,12 +1,15 @@
 # cogs/osrs.py
 # Contains commands for Old School RuneScape integration.
 
+# cogs/osrs.py
+# Contains commands for Old School RuneScape integration.
+
 import discord
 import aiohttp
 import re
 import urllib.parse as up
 import logging
-from discord import SlashCommandGroup, Option
+from discord import app_commands
 from discord.ext import commands
 
 from core.bot import GrazyBot
@@ -25,57 +28,55 @@ class OSRS(commands.Cog):
     def cog_unload(self):
         self.bot.loop.create_task(self.session.close())
 
-    osrs_group = SlashCommandGroup("osrs", "Commands for Old School RuneScape integration.")
+    osrs_group = app_commands.Group(name="osrs", description="Commands for Old School RuneScape integration.")
 
     @osrs_group.command(name="link", description="Link your Discord account to your OSRS name.")
-    async def link_osrs_name(self, ctx: discord.ApplicationContext, 
-                             osrs_name: Option(str, "Your Old School RuneScape username.")):
+    async def link_osrs_name(self, interaction: discord.Interaction, osrs_name: str):
         """Links a user's Discord ID to their OSRS username."""
-        await ctx.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         
         if not re.match(r"^[a-zA-Z0-9 _-]{1,12}$", osrs_name):
-            return await ctx.respond("Invalid OSRS username format.", ephemeral=True)
+            return await interaction.followup.send("Invalid OSRS username format.", ephemeral=True)
 
         try:
             async with self.bot.db_pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO user_links (discord_id, osrs_name) VALUES ($1, $2) "
                     "ON CONFLICT (discord_id) DO UPDATE SET osrs_name = EXCLUDED.osrs_name",
-                    ctx.author.id, osrs_name
+                    interaction.user.id, osrs_name
                 )
-            await ctx.respond(f"Your account has been linked to OSRS name: **{osrs_name}**.", ephemeral=True)
-            logger.info(f"User {ctx.author} linked their OSRS name to '{osrs_name}'.")
+            await interaction.followup.send(f"Your account has been linked to OSRS name: **{osrs_name}**.", ephemeral=True)
+            logger.info(f"User {interaction.user} linked their OSRS name to '{osrs_name}'.")
         except Exception as e:
-            logger.error(f"Error linking OSRS name for {ctx.author}: {e}", exc_info=True)
-            await ctx.respond("An error occurred while linking your account.", ephemeral=True)
+            logger.error(f"Error linking OSRS name for {interaction.user}: {e}", exc_info=True)
+            await interaction.followup.send("An error occurred while linking your account.", ephemeral=True)
 
     @osrs_group.command(name="profile", description="View a member's OSRS stats from the Hiscores.")
-    async def view_osrs_profile(self, ctx: discord.ApplicationContext, 
-                                member: Option(discord.Member, "The member to view. Defaults to yourself.", required=False)):
+    async def view_osrs_profile(self, interaction: discord.Interaction, member: discord.Member = None):
         """Fetches and displays a user's OSRS skills from the official hiscores."""
-        await ctx.defer()
-        target_member = member or ctx.author
+        await interaction.response.defer()
+        target_member = member or interaction.user
         
         async with self.bot.db_pool.acquire() as conn:
             osrs_name = await conn.fetchval("SELECT osrs_name FROM user_links WHERE discord_id = $1", target_member.id)
 
         if not osrs_name:
-            return await ctx.respond(f"{'You have' if target_member == ctx.author else f'{target_member.display_name} has'} not linked an OSRS name yet. Use `/osrs link`.", ephemeral=True)
+            return await interaction.followup.send(f"{'You have' if target_member == interaction.user else f'{target_member.display_name} has'} not linked an OSRS name yet. Use `/osrs link`.", ephemeral=True)
 
         try:
             async with self.session.get(f"{self.hiscores_url}?player={up.quote(osrs_name)}") as response:
                 if response.status == 404:
-                    return await ctx.respond(f"OSRS name **{osrs_name}** not found on the Hiscores.", ephemeral=True)
+                    return await interaction.followup.send(f"OSRS name **{osrs_name}** not found on the Hiscores.", ephemeral=True)
                 response.raise_for_status()
                 data = await response.text()
         except aiohttp.ClientError as e:
             logger.error(f"Hiscores fetch failed for {osrs_name}: {e}")
-            return await ctx.respond(f"Error fetching Hiscores data for **{osrs_name}**.", ephemeral=True)
+            return await interaction.followup.send(f"Error fetching Hiscores data for **{osrs_name}**.", ephemeral=True)
 
         skills_data, _ = osrs_utils.parse_hiscores_data(data)
         
         if not skills_data:
-            return await ctx.respond(f"Could not parse any skill data for **{osrs_name}**.", ephemeral=True)
+            return await interaction.followup.send(f"Could not parse any skill data for **{osrs_name}**.", ephemeral=True)
 
         profile_summary = await ai.generate_osrs_profile_summary(osrs_name, skills_data)
         
@@ -99,29 +100,28 @@ class OSRS(commands.Cog):
         for i, block in enumerate(osrs_utils.format_skill_list(skilling_skills, skills_data)):
             embed.add_field(name="Skilling", value=block, inline=True)
             
-        await ctx.respond(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @osrs_group.command(name="kc", description="View a member's OSRS boss kill counts.")
-    async def view_osrs_kc(self, ctx: discord.ApplicationContext, 
-                           member: Option(discord.Member, "The member to view. Defaults to yourself.", required=False)):
+    async def view_osrs_kc(self, interaction: discord.Interaction, member: discord.Member = None):
         """Fetches and displays a user's boss kill counts from the hiscores."""
-        await ctx.defer()
-        target_member = member or ctx.author
+        await interaction.response.defer()
+        target_member = member or interaction.user
         
         async with self.bot.db_pool.acquire() as conn:
             osrs_name = await conn.fetchval("SELECT osrs_name FROM user_links WHERE discord_id = $1", target_member.id)
 
         if not osrs_name:
-            return await ctx.respond(f"{'You have' if target_member == ctx.author else f'{target_member.display_name} has'} not linked an OSRS name yet.", ephemeral=True)
+            return await interaction.followup.send(f"{'You have' if target_member == interaction.user else f'{target_member.display_name} has'} not linked an OSRS name yet. Use `/osrs link`.", ephemeral=True)
 
         try:
             async with self.session.get(f"{self.hiscores_url}?player={up.quote(osrs_name)}") as response:
                 if response.status == 404:
-                    return await ctx.respond(f"OSRS name **{osrs_name}** not found on the Hiscores.", ephemeral=True)
+                    return await interaction.followup.send(f"OSRS name **{osrs_name}** not found on the Hiscores.", ephemeral=True)
                 response.raise_for_status()
                 data = await response.text()
         except aiohttp.ClientError:
-            return await ctx.respond(f"Error fetching Hiscores data for **{osrs_name}**.", ephemeral=True)
+            return await interaction.followup.send(f"Error fetching Hiscores data for **{osrs_name}**.", ephemeral=True)
         
         _, activities_data = osrs_utils.parse_hiscores_data(data)
 
@@ -148,7 +148,7 @@ class OSRS(commands.Cog):
             if current_field:
                 embed.add_field(name=f"PvM Kills (Part {field_count})", value=current_field, inline=False)
         
-        await ctx.respond(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot: GrazyBot):
     await bot.add_cog(OSRS(bot))
