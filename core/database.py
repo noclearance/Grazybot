@@ -1,13 +1,19 @@
-# core/database.py
-# Manages the database connection pool.
-
 import asyncpg
+import os
+from dotenv import load_dotenv
 import logging
-from . import config
 
 logger = logging.getLogger(__name__)
 
 async def create_db_pool():
+    load_dotenv()
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        logging.error("DATABASE_URL not set in environment variables")
+        raise ValueError("DATABASE_URL not set")
+    try:
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=10)
+        logging.info("Database connection pool created successfully")
     """
     Creates and returns a connection pool to the PostgreSQL database.
     Also ensures the database schema is up to date.
