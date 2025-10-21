@@ -3,7 +3,6 @@ from discord.ext import commands
 import os
 import asyncio
 import logging
-from dotenv import load_dotenv
 from core.database import create_db_pool
 from supabase import create_client, Client
 from . import config
@@ -64,27 +63,3 @@ class GrazyBot(commands.Bot):
         if self.db:
             await self.db.close()
         await super().close()
-
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    load_dotenv()
-
-    # Use the config module for token to ensure consistency
-    if not config.TOKEN:
-        raise ValueError("DISCORD_BOT_TOKEN not set in environment")
-
-    bot = GrazyBot(
-        command_prefix=config.BOT_PREFIX,
-        intents=discord.Intents.default()
-    )
-
-    try:
-        await bot.start(config.TOKEN)
-    except Exception as e:
-        logging.critical(f"An unexpected error occurred during bot startup: {e}", exc_info=True)
-    finally:
-        if not bot.is_closed():
-            await bot.close()
-
-if __name__ == "__main__":
-    asyncio.run(main())

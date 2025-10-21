@@ -5,6 +5,10 @@ import asyncio
 import logging
 import discord
 import sys
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from . import config
 from .bot_base import GrazyBot

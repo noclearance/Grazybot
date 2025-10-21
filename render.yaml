@@ -1,0 +1,46 @@
+# render.yaml
+# Configuration for deploying the Discord bot on Render.
+
+services:
+  # ---- PostgreSQL Database ----
+  - type: pserv
+    name: grazybot-db
+    env: postgres
+    postgres:
+      version: '15' # Using a modern, stable version of PostgreSQL
+    disk:
+      name: grazybot-db-disk
+      sizeGB: 1
+      mountPath: /var/lib/postgresql/data
+
+  # ---- Discord Bot Worker ----
+  - type: worker
+    name: grazybot-worker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m core.bot
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          type: pserv
+          name: grazybot-db
+          property: connectionString
+      - key: DISCORD_BOT_TOKEN
+        sync: false # Prevent Render from overwriting this secret
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: DEBUG_GUILD_ID
+        sync: false
+      - key: WOM_CLAN_ID
+        sync: false
+      - key: WOM_VERIFICATION_CODE
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+    # ---- Initial Database Setup ----
+    # This command runs *once* when the service is first created.
+    # It ensures the database schema is applied before the bot starts.
+    initialDeployHook: pip install asyncpg python-dotenv && python init_db.py
