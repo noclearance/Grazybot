@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Discord Bot Token ---
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("Missing required environment variable: TOKEN")
+    raise ValueError("Missing required environment variable: DISCORD_BOT_TOKEN")
 
 # --- Bot Configuration ---
 BOT_PREFIX = os.getenv("BOT_PREFIX", "/")
@@ -23,6 +23,14 @@ except (ValueError, TypeError):
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("Missing required environment variable: DATABASE_URL")
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+if not SUPABASE_URL:
+    raise ValueError("Missing required environment variable: SUPABASE_URL")
+
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+if not SUPABASE_KEY:
+    raise ValueError("Missing required environment variable: SUPABASE_KEY")
 
 # --- APIs ---
 WOM_CLAN_ID = os.getenv("WOM_CLAN_ID")
