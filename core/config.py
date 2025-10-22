@@ -2,10 +2,6 @@
 # Handles loading all settings from environment variables.
 
 import os
-from dotenv import load_dotenv
-
-# Load environment variables from a .env file
-load_dotenv()
 
 # --- Discord Bot Token ---
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
