@@ -6,7 +6,7 @@ import logging
 from dotenv import load_dotenv
 from core.database import create_db_pool
 
-class BotBase(commands.Bot):
+class GrazyBot(commands.Bot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.db = None
