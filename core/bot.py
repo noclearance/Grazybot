@@ -13,6 +13,7 @@ load_dotenv()
 from . import config
 from .bot_base import GrazyBot
 from .database import create_db_pool
+from server import keep_alive
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -55,6 +56,7 @@ async def main():
 
     # --- Start Bot ---
     try:
+        keep_alive()
         await bot.start(config.TOKEN)
     except discord.LoginFailure:
         logger.critical("Failed to log in. Please check your bot token.")

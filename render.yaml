@@ -13,9 +13,9 @@ services:
       sizeGB: 1
       mountPath: /var/lib/postgresql/data
 
-  # ---- Discord Bot Worker ----
-  - type: worker
-    name: grazybot-worker
+  # ---- Discord Bot Web Service ----
+  - type: web
+    name: grazybot
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: python -m core.bot
