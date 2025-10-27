@@ -1,12 +1,15 @@
 # Discord Bot
 py-cord==2.6.1
-python-dotenv==1.0.1
+discord.py>=2.3.2
+python-dotenv>=1.0.1
 
 # Web and APIs
 aiohttp
 asyncpg==0.30.0
+supabase>=2.0.0
 google-generativeai
 
 # Utilities
 Pillow
-pytest==8.2.0
+pytest>=8.2.0
+
