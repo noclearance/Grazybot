@@ -12,3 +12,4 @@ google-generativeai
 # Utilities
 Pillow
 pytest>=8.2.0
+
