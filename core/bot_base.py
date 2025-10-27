@@ -50,14 +50,17 @@ class GrazyBot(commands.Bot):
                 logging.info("Re-registered generic SubmissionView.")
 
         # Sync Slash Commands
+        logging.info("Starting command tree synchronization...")
         if config.DEBUG_GUILD_ID:
             guild = discord.Object(id=int(config.DEBUG_GUILD_ID))
+            logging.info(f"Syncing command tree to guild {config.DEBUG_GUILD_ID}...")
             self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            logging.info(f"Commands synced to debug guild {config.DEBUG_GUILD_ID}.")
+            synced = await self.tree.sync(guild=guild)
+            logging.info(f"Command tree synced successfully! {len(synced)} command(s) registered to guild {config.DEBUG_GUILD_ID}.")
         else:
-            await self.tree.sync()
-            logging.info("Commands synced globally.")
+            logging.info("Syncing command tree globally (this may take up to 1 hour to appear in Discord)...")
+            synced = await self.tree.sync()
+            logging.info(f"Command tree synced successfully! {len(synced)} command(s) registered globally.")
 
     async def on_ready(self):
         logging.info(f'Logged in as {self.user.name} (ID: {self.user.id})')

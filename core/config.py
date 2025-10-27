@@ -10,10 +10,16 @@ if not TOKEN:
 
 # --- Bot Configuration ---
 BOT_PREFIX = os.getenv("BOT_PREFIX", "/")
-try:
-    DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID"))
-except (ValueError, TypeError):
-    raise ValueError("DEBUG_GUILD_ID must be a valid integer.")
+# Optional: Set DEBUG_GUILD_ID to sync commands to a specific guild (faster for testing)
+# If not set, commands will sync globally (slower, up to 1 hour)
+DEBUG_GUILD_ID = os.getenv("DEBUG_GUILD_ID")
+if DEBUG_GUILD_ID:
+    try:
+        DEBUG_GUILD_ID = int(DEBUG_GUILD_ID)
+    except (ValueError, TypeError):
+        raise ValueError("DEBUG_GUILD_ID must be a valid integer.")
+else:
+    DEBUG_GUILD_ID = None
 
 # --- Database ---
 DATABASE_URL = os.getenv("DATABASE_URL")
