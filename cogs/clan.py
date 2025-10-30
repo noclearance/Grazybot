@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import logging
+import json
 from core.bot_base import BotBase
 from utils import wom
 
@@ -13,11 +14,10 @@ class Clan(commands.Cog):
     def __init__(self, bot: BotBase):
         self.bot = bot
 
-    clan_group = app_commands.Group(name="clan", description="Commands for managing the clan.")
-
-    @clan_group.command(name="add_member", description="Add a new member to the clan.")
-    async def add_member(self, interaction: discord.Interaction, osrs_name: str):
-        """Adds a new member to the clan database."""
+    @app_commands.command(name="saveclan", description="Save or update clan data.")
+    @app_commands.describe(data="Data to save (e.g., 'level:10, members:5' or JSON format)")
+    async def save_clan_data(self, interaction: discord.Interaction, data: str):
+        """Saves or updates clan data in the Supabase table."""
         await interaction.response.defer(ephemeral=True)
 
         # Fetch player details from Wise Old Man
@@ -75,6 +75,51 @@ class Clan(commands.Cog):
         except Exception as e:
             logger.error(f"Error fetching member from Supabase: {e}", exc_info=True)
             await interaction.followup.send("An error occurred while fetching the member's profile.", ephemeral=True)
+
+    @clan_group.command(name="save_data", description="Save or update clan data.")
+    @app_commands.describe(data="Data to save (e.g., 'level:10, members:5' or JSON format)")
+    async def save_clan_data(self, interaction: discord.Interaction, data: str):
+        """Saves or updates clan data in the Supabase table."""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Attempt to parse the input string as JSON
+            try:
+                clan_data = json.loads(data)
+            except json.JSONDecodeError:
+                # Fallback for key-value string format
+                clan_data = {}
+                for item in data.split(','):
+                    if ':' in item:
+                        key, value = item.split(':', 1)
+                        clan_data[key.strip()] = value.strip()
+        except Exception as e:
+            await interaction.followup.send(
+                "Invalid data format. Please use 'key:value, key2:value2' or a valid JSON string.",
+                ephemeral=True
+            )
+            logger.warning(f"Invalid data format from {interaction.user}: {data}")
+            return
+
+        # Prepare the data for Supabase
+        payload = {
+            "clan_name": interaction.guild.name,
+            "data": clan_data
+        }
+
+        try:
+            # Insert the data into the 'clan_data' table
+            response = self.bot.supabase.table("clan_data").insert(payload).execute()
+
+            if response.data:
+                await interaction.followup.send("Clan data has been successfully saved.", ephemeral=True)
+                logger.info(f"Clan data saved by {interaction.user} for guild {interaction.guild.id}.")
+            else:
+                await interaction.followup.send("Failed to save clan data. Please check logs.", ephemeral=True)
+
+        except Exception as e:
+            logger.error(f"Error saving clan data to Supabase: {e}", exc_info=True)
+            await interaction.followup.send("An error occurred while saving clan data.", ephemeral=True)
 
 async def setup(bot: BotBase):
     await bot.add_cog(Clan(bot))
