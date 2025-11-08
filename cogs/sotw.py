@@ -7,7 +7,7 @@
 import discord
 import random
 import logging
-from discord import app_commands
+from discord.commands import SlashCommandGroup
 from discord.ext import commands
 from datetime import datetime
 
@@ -32,18 +32,18 @@ class SOTW(commands.Cog):
     def __init__(self, bot: GrazyBot):
         self.bot = bot
 
-    sotw = app_commands.Group(name="sotw", description="Commands for Skill of the Week")
+    sotw = SlashCommandGroup("sotw", "Commands for Skill of the Week")
 
-    async def start_sotw_logic(self, interaction: discord.Interaction, skill: str, duration_days: int):
+    async def start_sotw_logic(self, ctx: discord.ApplicationContext, skill: str, duration_days: int):
         """Shared logic for starting an SOTW, usable by commands and views."""
         data, error = await wom.create_competition(skill, duration_days)
         if error:
-            await interaction.followup.send(f"Error creating WOM competition: {error}", ephemeral=True)
+            await ctx.followup.send(f"Error creating WOM competition: {error}", ephemeral=True)
             return
 
         competition_id = data.get('competition', {}).get('id')
         if not competition_id:
-            return await interaction.followup.send("Failed to get competition ID from WOM.", ephemeral=True)
+            return await ctx.followup.send("Failed to get competition ID from WOM.", ephemeral=True)
 
         # Store the active competition in the database
         async with self.bot.db_pool.acquire() as conn:
@@ -54,37 +54,37 @@ class SOTW(commands.Cog):
 
         sotw_channel = self.bot.get_channel(config.SOTW_CHANNEL_ID)
         if sotw_channel:
-            embed = self.create_competition_embed(data, interaction.user)
+            embed = self.create_competition_embed(data, ctx.author)
             sotw_message = await sotw_channel.send(embed=embed)
             await clan.send_global_announcement(
                 self.bot, "sotw_start", {"skill": skill.capitalize()}, sotw_message.jump_url
             )
-            await interaction.followup.send(f"SOTW for **{skill.capitalize()}** started in {sotw_channel.mention}!", ephemeral=True)
+            await ctx.followup.send(f"SOTW for **{skill.capitalize()}** started in {sotw_channel.mention}!", ephemeral=True)
         else:
             logger.warning("SOTW_CHANNEL_ID not configured.")
-            await interaction.followup.send("SOTW Channel not configured. Please set it up.", ephemeral=True)
+            await ctx.followup.send("SOTW Channel not configured. Please set it up.", ephemeral=True)
 
     @sotw.command(name="start", description="Manually start a new SOTW competition.")
     @commands.has_permissions(manage_events=True)
-    async def start(self, interaction: discord.Interaction,
+    async def start(self, ctx: discord.ApplicationContext,
                     skill: str,
                     duration_days: int = 7):
-        await interaction.response.defer(ephemeral=True)
-        await self.start_sotw_logic(interaction, skill, duration_days)
+        await ctx.defer(ephemeral=True)
+        await self.start_sotw_logic(ctx, skill, duration_days)
 
     @sotw.command(name="poll", description="Start a poll to choose the next SOTW.")
     @commands.has_permissions(manage_events=True)
-    async def poll(self, interaction: discord.Interaction):
-        if interaction.guild.id in self.bot.active_polls:
-            return await interaction.response.send_message("An SOTW poll is already active in this server.", ephemeral=True)
+    async def poll(self, ctx: discord.ApplicationContext):
+        if ctx.guild.id in self.bot.active_polls:
+            return await ctx.respond("An SOTW poll is already active in this server.", ephemeral=True)
         
         poll_skills = random.sample([s for s in WOM_SKILLS if s != 'overall'], 6)
         
-        async def start_sotw_callback(interaction, winner):
-            await self.start_sotw_logic(interaction, winner, 7)
+        async def start_sotw_callback(ctx, winner):
+            await self.start_sotw_logic(ctx, winner, 7)
 
         view = SotwPollView(
-            author=interaction.user,
+            author=ctx.author,
             bot_instance=self.bot,
             skills_to_poll=poll_skills,
             callback=start_sotw_callback
@@ -93,29 +93,29 @@ class SOTW(commands.Cog):
         sotw_channel = self.bot.get_channel(config.SOTW_CHANNEL_ID)
         if sotw_channel:
             poll_message = await sotw_channel.send(embed=await view.create_embed(), view=view)
-            self.bot.active_polls[interaction.guild.id] = poll_message.id
-            await interaction.response.send_message(f"SOTW Poll created in {sotw_channel.mention}!", ephemeral=True)
+            self.bot.active_polls[ctx.guild.id] = poll_message.id
+            await ctx.respond(f"SOTW Poll created in {sotw_channel.mention}!", ephemeral=True)
         else:
-            await interaction.response.send_message("Error: SOTW Channel not configured.", ephemeral=True)
+            await ctx.respond("Error: SOTW Channel not configured.", ephemeral=True)
 
     @sotw.command(name="view", description="View the leaderboard for the current SOTW.")
-    async def view(self, interaction: discord.Interaction,
+    async def view(self, ctx: discord.ApplicationContext,
                    competition_id: int = None):
-        await interaction.response.defer()
+        await ctx.defer()
         
         if not competition_id:
             async with self.bot.db_pool.acquire() as conn:
                 comp_id = await conn.fetchval("SELECT id FROM active_competitions ORDER BY ends_at DESC LIMIT 1")
                 if not comp_id:
-                    return await interaction.followup.send("No active SOTW competition found.", ephemeral=True)
+                    return await ctx.followup.send("No active SOTW competition found.", ephemeral=True)
                 competition_id = comp_id
         
         data, error = await wom.get_competition_details(competition_id)
         if error:
-            return await interaction.followup.send(f"Could not fetch details for competition ID {competition_id}. Error: {error}")
+            return await ctx.followup.send(f"Could not fetch details for competition ID {competition_id}. Error: {error}")
 
         embed = self.create_leaderboard_embed(data)
-        await interaction.followup.send(embed=embed)
+        await ctx.followup.send(embed=embed)
 
     def create_competition_embed(self, data: dict, author: discord.User) -> discord.Embed:
         """Helper to create the initial SOTW announcement embed."""

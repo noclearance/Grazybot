@@ -68,3 +68,15 @@ async def get_weekly_gains() -> tuple[list | None, str | None]:
         except aiohttp.ClientError as e:
             logger.error(f"WOM API Error fetching weekly gains: {e}")
             return None, f"Error fetching weekly gains: {e}"
+
+async def get_player_details(osrs_name: str) -> tuple[dict | None, str | None]:
+    """Fetches player details from Wise Old Man."""
+    url = f"{BASE_URL}/players/{osrs_name}"
+    async with aiohttp.ClientSession(headers=HEADERS) as session:
+        try:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                return await response.json(), None
+        except aiohttp.ClientError as e:
+            logger.error(f"WOM API Error fetching player details for {osrs_name}: {e}")
+            return None, f"API Error: {e}"

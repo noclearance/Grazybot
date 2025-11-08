@@ -8,7 +8,7 @@ import discord
 import aiohttp
 import re
 import logging
-from discord import app_commands
+from discord.commands import SlashCommandGroup
 from discord.ext import commands
 
 from core.bot import GrazyBot
@@ -28,7 +28,7 @@ class GrandExchange(commands.Cog):
         """Close the aiohttp session when the cog is unloaded."""
         self.bot.loop.create_task(self.session.close())
 
-    ge = app_commands.Group(name="ge", description="Commands for the Grand Exchange.")
+    ge = SlashCommandGroup("ge", "Commands for the Grand Exchange.")
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Provides autocomplete suggestions for OSRS items."""
@@ -50,13 +50,13 @@ class GrandExchange(commands.Cog):
 
     @ge.command(name="price", description="Check the Grand Exchange price of an item.")
     @app_commands.autocomplete(item=item_autocomplete)
-    async def price(self, interaction: discord.Interaction, item: str):
+    async def price(self, ctx: discord.ApplicationContext, item: str):
         """Fetches and displays the GE price for a specified item."""
-        await interaction.response.defer()
+        await ctx.defer()
         
         item_details = self.bot.item_mapping.get(item.lower())
         if not item_details:
-            return await interaction.followup.send("Could not find this item. Please choose one from the list.", ephemeral=True)
+            return await ctx.followup.send("Could not find this item. Please choose one from the list.", ephemeral=True)
             
         item_id = item_details['id']
         try:
@@ -78,18 +78,18 @@ class GrandExchange(commands.Cog):
                 embed.add_field(name="Last Sell", value=f"Updated {format_timestamp(price_data.get('lowTime'))}", inline=True)
 
                 embed.set_footer(text="Price data from osrs.cloud")
-                await interaction.followup.send(embed=embed)
+                await ctx.followup.send(embed=embed)
         except aiohttp.ClientError as e:
             logger.error(f"GE price check failed for item '{item}' (ID: {item_id}): {e}")
-            await interaction.followup.send(f"Error fetching price data. The API might be down.", ephemeral=True)
+            await ctx.followup.send(f"Error fetching price data. The API might be down.", ephemeral=True)
         except Exception as e:
             logger.error(f"Unexpected error in GE price check for '{item}': {e}", exc_info=True)
-            await interaction.followup.send("An unexpected error occurred. Please try again later.", ephemeral=True)
+            await ctx.followup.send("An unexpected error occurred. Please try again later.", ephemeral=True)
 
     @ge.command(name="value", description="Calculate the total GE value of multiple items.")
-    async def calculate_value(self, interaction: discord.Interaction, item_list: str):
+    async def calculate_value(self, ctx: discord.ApplicationContext, item_list: str):
         """Parses a string of items and quantities, and calculates their total GE value."""
-        await interaction.response.defer()
+        await ctx.defer()
 
         total_value = 0
         valued_items = []
@@ -99,7 +99,7 @@ class GrandExchange(commands.Cog):
         matches = item_regex.findall(item_list.lower())
 
         if not matches:
-            return await interaction.followup.send("Invalid format. Please use a format like '10k raw sharks, 1 twisted bow'.", ephemeral=True)
+            return await ctx.followup.send("Invalid format. Please use a format like '10k raw sharks, 1 twisted bow'.", ephemeral=True)
 
         for quantity_str, item_name_raw in matches:
             item_name = item_name_raw.strip()
@@ -144,8 +144,8 @@ class GrandExchange(commands.Cog):
         if unmatched_items:
             embed.add_field(name="Unmatched / Failed Items", value="\n".join(unmatched_items), inline=False)
 
-        await interaction.followup.send(embed=embed)
+        await ctx.followup.send(embed=embed)
 
 
 async def setup(bot: GrazyBot):
-    await bot.add_cog(GrandExchange(bot))
+    bot.add_cog(GrandExchange(bot))
