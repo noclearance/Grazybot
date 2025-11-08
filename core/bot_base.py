@@ -6,6 +6,7 @@ import logging
 from core.database import create_db_pool
 from supabase import create_client, Client
 from . import config
+from .cogs_loader import load_cogs
 
 class GrazyBot(commands.Bot):
     def __init__(self, *args, **kwargs):
@@ -20,15 +21,7 @@ class GrazyBot(commands.Bot):
         self.db = await create_db_pool()
         self.supabase: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
 
-        # Load Cogs
-        cogs_dir = "cogs"
-        for filename in os.listdir(cogs_dir):
-            if filename.endswith(".py") and not filename.startswith("__"):
-                try:
-                    await self.load_extension(f"cogs.{filename[:-3]}")
-                    logging.info(f"Successfully loaded extension: {filename}")
-                except Exception as e:
-                    logging.error(f"Failed to load extension {filename}: {e}", exc_info=True)
+        await load_cogs(self)
 
         # Defer View Imports to prevent circular dependencies
         from utils.views import GiveawayView, PvmEventView, SubmissionView

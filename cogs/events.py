@@ -5,7 +5,7 @@
 # Command to view all active clan events.
 
 import discord
-from discord import app_commands
+from discord.commands import SlashCommandGroup
 from discord.ext import commands
 import asyncio
 import logging
@@ -20,12 +20,12 @@ class Events(commands.Cog):
     def __init__(self, bot: GrazyBot):
         self.bot = bot
 
-    events_group = app_commands.Group(name="events", description="View all active clan events.")
+    events_group = SlashCommandGroup("events", "View all active clan events.")
 
     @events_group.command(name="view", description="Shows all currently active competitions and events.")
-    async def view_events(self, interaction: discord.Interaction):
+    async def view_events(self, ctx: discord.ApplicationContext):
         """Fetches and displays all active events in an embed."""
-        await interaction.response.defer()
+        await ctx.defer()
 
         try:
             async with self.bot.db_pool.acquire() as conn:
@@ -73,12 +73,12 @@ class Events(commands.Cog):
             else:
                 embed.add_field(name="🐉 Upcoming PVM Event", value="No PVM events scheduled.", inline=False)
 
-            embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
-            await interaction.followup.send(embed=embed)
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+            await ctx.followup.send(embed=embed)
 
         except Exception as e:
             logger.error(f"Error fetching active events: {e}", exc_info=True)
-            await interaction.followup.send("An error occurred while fetching the events. Please try again later.", ephemeral=True)
+            await ctx.followup.send("An error occurred while fetching the events. Please try again later.", ephemeral=True)
 
 async def setup(bot: GrazyBot):
-    await bot.add_cog(Events(bot))
+    bot.add_cog(Events(bot))

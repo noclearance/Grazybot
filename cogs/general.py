@@ -6,7 +6,7 @@
 
 import discord
 from discord.ext import commands
-from discord import app_commands
+from discord.commands import SlashCommandGroup
 import logging
 
 from core.bot import GrazyBot
@@ -20,12 +20,12 @@ class General(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="help", description="Shows a list of all available commands.")
-    async def help(self, interaction: discord.Interaction):
+    async def help(self, ctx: discord.ApplicationContext):
         """
         Dynamically generates a help message showing all available commands,
         separated into Admin and Member categories.
         """
-        await interaction.response.defer(ephemeral=True)
+        await ctx.defer(ephemeral=True)
 
         embed = discord.Embed(
             title="GrazyBot Command List",
@@ -59,30 +59,30 @@ class General(commands.Cog):
             embed.add_field(name="🔒 Admin Commands", value="\n".join(sorted(categorized_commands['Admin'])), inline=False)
 
         embed.set_footer(text="Let the games begin!")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await ctx.followup.send(embed=embed, ephemeral=True)
 
-    points_group = app_commands.Group(name="points", description="Commands related to Clan Points.")
+    points_group = SlashCommandGroup("points", "Commands related to Clan Points.")
 
     @points_group.command(name="view", description="Check your current Clan Point balance.")
-    async def view_points(self, interaction: discord.Interaction):
+    async def view_points(self, ctx: discord.ApplicationContext):
         """Displays the calling user's current clan point balance."""
-        await interaction.response.defer(ephemeral=True)
+        await ctx.defer(ephemeral=True)
         try:
             async with self.bot.db_pool.acquire() as conn:
                 point_data = await conn.fetchval(
-                    "SELECT points FROM clan_points WHERE discord_id = $1", interaction.user.id
+                    "SELECT points FROM clan_points WHERE discord_id = $1", ctx.author.id
                 )
 
             current_points = point_data if point_data is not None else 0
-            await interaction.followup.send(f"You currently have **{current_points:,}** Clan Points.")
+            await ctx.followup.send(f"You currently have **{current_points:,}** Clan Points.")
         except Exception as e:
-            logger.error(f"Error fetching points for user {interaction.user.id}: {e}", exc_info=True)
-            await interaction.followup.send("Could not fetch your points balance. Please try again later.", ephemeral=True)
+            logger.error(f"Error fetching points for user {ctx.author.id}: {e}", exc_info=True)
+            await ctx.followup.send("Could not fetch your points balance. Please try again later.", ephemeral=True)
 
     @points_group.command(name="leaderboard", description="View the Clan Points leaderboard.")
-    async def leaderboard(self, interaction: discord.Interaction):
+    async def leaderboard(self, ctx: discord.ApplicationContext):
         """Shows the top 10 members with the most clan points."""
-        await interaction.response.defer()
+        await ctx.defer()
         try:
             async with self.bot.db_pool.acquire() as conn:
                 leaders = await conn.fetch(
@@ -96,16 +96,16 @@ class General(commands.Cog):
             else:
                 leaderboard_text = []
                 for i, record in enumerate(leaders):
-                    member = interaction.guild.get_member(record['discord_id'])
+                    member = ctx.guild.get_member(record['discord_id'])
                     member_name = member.display_name if member else f"User ID: {record['discord_id']}"
                     rank_emoji = {0: "🥇", 1: "🥈", 2: "🥉"}.get(i, f"**#{i + 1}**")
                     leaderboard_text.append(f"{rank_emoji} {member_name}: `{record['points']:,}` points")
                 embed.description = "\n".join(leaderboard_text)
 
-            await interaction.followup.send(embed=embed)
+            await ctx.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error generating points leaderboard: {e}", exc_info=True)
-            await interaction.followup.send("Could not retrieve the leaderboard. Please try again later.")
+            await ctx.followup.send("Could not retrieve the leaderboard. Please try again later.")
 
 async def setup(bot: GrazyBot):
-    await bot.add_cog(General(bot))
+    bot.add_cog(General(bot))
