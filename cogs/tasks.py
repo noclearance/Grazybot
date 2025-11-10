@@ -7,6 +7,7 @@ from discord.ext import tasks, commands
 import random
 
 from core.bot import GrazyBot
+from core import config
 from utils import raffle as raffle_utils, wom as wom_utils, clan
 
 logger = logging.getLogger(__name__)

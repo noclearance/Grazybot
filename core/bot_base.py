@@ -10,6 +10,8 @@ class GrazyBot(commands.Bot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.db_pool = None
+        self.item_mapping = {}  # For GE item autocomplete
+        self.active_polls = {}  # For SOTW polls
 
     async def setup_hook(self):
         logging.info("Running setup_hook...")

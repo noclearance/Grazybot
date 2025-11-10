@@ -9,7 +9,6 @@ from discord import app_commands
 from discord.ext import commands
 import logging
 
-from core.bot import GrazyBot
 from utils import clan, wom
 
 logger = logging.getLogger(__name__)
@@ -17,7 +16,7 @@ logger = logging.getLogger(__name__)
 class Admin(commands.Cog):
     """Cog for admin-only commands."""
 
-    def __init__(self, bot: GrazyBot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     # Create a slash command group using the app_commands.Group decorator
@@ -118,5 +117,5 @@ class Admin(commands.Cog):
         await interaction.followup.send("Successfully awarded points to:\n" + "\n".join(awarded_to), ephemeral=True)
         logger.info(f"Admin {interaction.user} awarded SOTW points for competition {competition_id}.")
 
-async def setup(bot: GrazyBot):
+async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot))

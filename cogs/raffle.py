@@ -10,7 +10,6 @@ from discord import app_commands, Color
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 
-from core.bot import GrazyBot
 from core import config
 from utils import raffle as raffle_utils, clan, ai
 
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 class Raffle(commands.Cog):
     """Cog for all raffle-related commands."""
 
-    def __init__(self, bot: GrazyBot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     # Create a slash command group using the app_commands.Group decorator
@@ -136,16 +135,16 @@ class Raffle(commands.Cog):
     async def draw_now(self, interaction: discord.Interaction,
                        raffle_id: int):
         """Forces a raffle to end and draws a winner immediately."""
-        await ctx.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
 
         async with self.bot.db_pool.acquire() as conn:
             result = await conn.execute("UPDATE raffles SET ends_at = NOW() WHERE id = $1 AND winner_id IS NULL", raffle_id)
             if 'UPDATE 0' in result:
-                return await ctx.respond(f"Raffle ID {raffle_id} not found or already ended.", ephemeral=True)
+                return await interaction.followup.send(f"Raffle ID {raffle_id} not found or already ended.", ephemeral=True)
         
         result_message = await raffle_utils.draw_raffle_winner(self.bot, raffle_id)
-        await ctx.respond(f"Forced raffle draw for ID {raffle_id}. Result: {result_message}", ephemeral=True)
-        logger.info(f"Admin {ctx.author} forced a draw for raffle {raffle_id}.")
+        await interaction.followup.send(f"Forced raffle draw for ID {raffle_id}. Result: {result_message}", ephemeral=True)
+        logger.info(f"Admin {interaction.user} forced a draw for raffle {raffle_id}.")
 
-async def setup(bot: GrazyBot):
+async def setup(bot: commands.Bot):
     await bot.add_cog(Raffle(bot))

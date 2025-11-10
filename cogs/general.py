@@ -9,14 +9,12 @@ from discord.ext import commands
 from discord import app_commands
 import logging
 
-from core.bot import GrazyBot
-
 logger = logging.getLogger(__name__)
 
 class General(commands.Cog):
     """Cog for general, non-admin commands."""
 
-    def __init__(self, bot: GrazyBot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @app_commands.command(name="help", description="Shows a list of all available commands.")
@@ -107,5 +105,5 @@ class General(commands.Cog):
             logger.error(f"Error generating points leaderboard: {e}", exc_info=True)
             await interaction.followup.send("Could not retrieve the leaderboard. Please try again later.")
 
-async def setup(bot: GrazyBot):
+async def setup(bot: commands.Bot):
     await bot.add_cog(General(bot))
