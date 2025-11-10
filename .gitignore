@@ -1,15 +1,63 @@
-# Ignore the virtual environment
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
 venv/
+ENV/
+env/
+.venv
 
-# Ignore the environment file with our secrets
+# Environment variables
 .env
+.env.local
 
-# Ignore the database file
+# Database
 *.db
 
-# Ignore generated images
+# Generated images
 *.png
 
-# Ignore Python cache files
-__pycache__/
-*.pyc
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Replit
+.upm
+.cache
+.config
