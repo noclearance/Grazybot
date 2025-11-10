@@ -126,7 +126,8 @@ class Raffle(commands.Cog):
             desc = []
             for entry in entries:
                 member = interaction.guild.get_member(entry['user_id'])
-                desc.append(f"**{member.display_name if member else f'ID: {entry['user_id']}'}**: `{entry['count']}` ticket(s)")
+                name = member.display_name if member else f"ID: {entry['user_id']}"
+                desc.append(f"**{name}**: `{entry['count']}` ticket(s)")
             embed.description = "\n".join(desc)
             
         await interaction.followup.send(embed=embed)

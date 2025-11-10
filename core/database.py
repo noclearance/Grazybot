@@ -23,12 +23,16 @@ async def create_db_pool():
     
     logger.info(f"Attempting to connect to database")
     try:
+        # Determine SSL mode based on database host
+        # Replit local databases don't support SSL, external databases like Supabase do
+        ssl_mode = 'prefer' if 'helium' in db_url else 'require'
+        
         pool = await asyncpg.create_pool(
             dsn=db_url,
             min_size=2,
             max_size=10,
             command_timeout=60,
-            ssl='require'  # Supabase requires SSL
+            ssl=ssl_mode
         )
         logger.info("Database connection pool created successfully")
 
