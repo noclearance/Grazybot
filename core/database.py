@@ -17,13 +17,18 @@ async def create_db_pool():
         logger.error("DATABASE_URL not set in environment variables")
         raise ValueError("DATABASE_URL not set")
     
-    logger.info(f"Attempting to connect to database with URL: {db_url.split('@')[1] if db_url else 'None'}")
+    # Convert postgres:// to postgresql:// for asyncpg
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    
+    logger.info(f"Attempting to connect to database")
     try:
         pool = await asyncpg.create_pool(
             dsn=db_url,
-            min_size=5,
-            max_size=20,
-            command_timeout=60
+            min_size=2,
+            max_size=10,
+            command_timeout=60,
+            ssl='require'  # Supabase requires SSL
         )
         logger.info("Database connection pool created successfully")
 

@@ -39,12 +39,7 @@ async def main():
                    intents=intents,
                    help_command=None)
 
-    # --- Database Connection ---
-    db_pool = await create_db_pool()
-    if not db_pool:
-        logger.critical("Database connection failed. The bot cannot start.")
-        sys.exit(1)
-    bot.db_pool = db_pool
+    # Database will be initialized in setup_hook
 
     # --- Start Bot ---
     try:

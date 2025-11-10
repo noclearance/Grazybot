@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 import logging
 
-from core.bot_base import GrazyBot
+from core.bot import GrazyBot
 from utils import clan, wom
 
 logger = logging.getLogger(__name__)
