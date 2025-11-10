@@ -11,15 +11,14 @@ from .bot_base import GrazyBot
 from .database import create_db_pool
 
 # --- Logging Setup ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S')
 logging.getLogger('discord').setLevel(logging.WARNING)
 logging.getLogger('asyncio').setLevel(logging.WARNING)
 
 logger = logging.getLogger("main")
+
 
 async def main():
     """The main function to initialize and run the bot."""
@@ -36,11 +35,9 @@ async def main():
     intents.message_content = True
 
     # --- Initialize Bot ---
-    bot = GrazyBot(
-        command_prefix=config.BOT_PREFIX,
-        intents=intents,
-        help_command=None
-    )
+    bot = GrazyBot(command_prefix=config.BOT_PREFIX,
+                   intents=intents,
+                   help_command=None)
 
     # --- Database Connection ---
     db_pool = await create_db_pool()
@@ -56,10 +53,12 @@ async def main():
         logger.critical("Failed to log in. Please check your bot token.")
         sys.exit(1)
     except Exception as e:
-        logger.critical(f"An unexpected error occurred while running the bot: {e}")
+        logger.critical(
+            f"An unexpected error occurred while running the bot: {e}")
     finally:
         if not bot.is_closed():
             await bot.close()
+
 
 if __name__ == "__main__":
     try:
