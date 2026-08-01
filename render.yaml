@@ -1,17 +1,24 @@
-# Render Blueprint — Discord bot (background worker)
-# Dashboard: leave "Root Directory" EMPTY (repo root has main.py).
-# Branch: main
+# Matches Render dashboard export for "Grazybot" (free web).
+# Root Directory: leave EMPTY in dashboard.
+# Branch: main (has main.py at repo root).
+version: "1"
 services:
-  - type: worker
-    name: grazybot
+  - type: web
+    name: Grazybot
     runtime: python
-    plan: starter
-    buildCommand: pip install -r requirements.txt
+    repo: https://github.com/noclearance/Grazybot
+    branch: main
+    plan: free
+    region: ohio
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python main.py
+    autoDeployTrigger: commit
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.0"
       - key: TOKEN
+        sync: false
+      - key: DISCORD_BOT_TOKEN
         sync: false
       - key: DATABASE_URL
         sync: false
@@ -33,7 +40,13 @@ services:
         sync: false
       - key: ANNOUNCEMENTS_CHANNEL_ID
         sync: false
+      - key: GENERAL_CHAT_CHANNEL_ID
+        sync: false
       - key: PVM_EVENT_CHANNEL_ID
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
         sync: false
       - key: BASE44_HUB_URL
         sync: false
