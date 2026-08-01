@@ -1,0 +1,43 @@
+# Render Blueprint — Discord bot (background worker)
+# Dashboard: leave "Root Directory" EMPTY (repo root has main.py).
+# Branch: main
+services:
+  - type: worker
+    name: grazybot
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: DEBUG_GUILD_ID
+        sync: false
+      - key: WOM_CLAN_ID
+        sync: false
+      - key: WOM_VERIFICATION_CODE
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SOTW_CHANNEL_ID
+        sync: false
+      - key: BINGO_CHANNEL_ID
+        sync: false
+      - key: RAFFLE_CHANNEL_ID
+        sync: false
+      - key: RECAP_CHANNEL_ID
+        sync: false
+      - key: ANNOUNCEMENTS_CHANNEL_ID
+        sync: false
+      - key: PVM_EVENT_CHANNEL_ID
+        sync: false
+      - key: BASE44_HUB_URL
+        sync: false
+      - key: BASE44_HUB_TOKEN
+        sync: false
+      - key: HUB_API_TOKEN
+        sync: false
