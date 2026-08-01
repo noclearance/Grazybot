@@ -44,7 +44,7 @@ PVM_EVENT_CHANNEL_ID = int(os.getenv('PVM_EVENT_CHANNEL_ID')) # New: for PVM eve
 
 # Configure the Gemini AI (for text)
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-1.0-pro')
+ai_model = genai.GenerativeModel('gemini-2.0-flash')
 
 # Define WOM skill metrics & Bot Intents
 WOM_SKILLS = ["overall", "attack", "defence", "strength", "hitpoints", "ranged", "prayer", "magic", "cooking", "woodcutting", "fletching", "fishing", "firemaking", "crafting", "smithing", "mining", "herblore", "agility", "thieving", "slayer", "farming", "runecraft", "hunter", "construction"]

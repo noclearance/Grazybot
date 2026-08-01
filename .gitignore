@@ -1,11 +1,52 @@
-# Ignore the virtual environment
-venv/
-
-# Ignore the environment file with our secrets
+# Secrets — never commit
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
 
-# Ignore the database file
+# Virtual environments
+venv/
+.venv/
+.venv_port/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local DB / generated assets
 events.db
-
-# Ignore generated images
+*.db
+bingo_board.png
 *.png
+!docs/**/*.png
+
+# Backups and editor junk
+*.bak
+*.backup
+*~
+desktop.ini
+Thumbs.db
+.DS_Store
+
+# IDE (optional local-only)
+.idea/
+*.swp
+
+# Nested/broken scaffolding leftovers
+requirements_nested_backup.txt
+git
